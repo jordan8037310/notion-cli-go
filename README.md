@@ -36,19 +36,55 @@ You can interact with the tool using the built binary:
 ./notioncli [command]
 ```
 
-Here are the available commands:
+### Task Commands (To-Do focused)
 
-- `list`: List all tasks on the Notion page.
-- `add`: Add a new task to the Notion page.
-- `check`: Mark a task as complete.
-- `uncheck`: Mark a task as incomplete.
-- `delete`: Delete a task from the Notion page.
+- `list`: List all to-do tasks on the Notion page.
+- `add <task>`: Add a new to-do task to the Notion page.
+- `check <number>`: Mark a task as complete.
+- `uncheck <number>`: Mark a task as incomplete.
+- `delete <number>`: Delete a to-do task from the Notion page.
+
+### Block Commands (All block types)
+
+The `blocks` subcommand allows you to work with all Notion block types:
+
+```bash
+# List all blocks
+notioncli blocks list
+
+# List only specific block types
+notioncli blocks list --type heading_1
+
+# Add different block types
+notioncli blocks add "Hello world"                    # paragraph (default)
+notioncli blocks add "Section Title" -t heading_1     # heading
+notioncli blocks add "Buy milk" -t to_do              # to-do item
+notioncli blocks add "Important note" -t callout      # callout
+notioncli blocks add "" -t divider                    # divider
+
+# Delete any block by index
+notioncli blocks delete 5
+```
+
+**Supported block types:**
+- `paragraph` - Regular text
+- `heading_1`, `heading_2`, `heading_3` - Headings
+- `bulleted_list_item`, `numbered_list_item` - List items
+- `to_do` - Checkbox items
+- `toggle` - Collapsible content
+- `quote` - Block quotes
+- `callout` - Highlighted callouts
+- `divider` - Horizontal dividers
+- `code` - Code blocks
+
+### Other Commands
+
 - `completion`: Generate the autocompletion script for your shell
 - `help`: Show help information.
 
 ## Known Limitations
 
-Currently, the tool only supports a single Notion page at a time and is focused on the ToDo use case.
+Currently, the tool only supports a single Notion page at a time.
 
 ## Testing
 
