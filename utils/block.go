@@ -372,38 +372,55 @@ func DeleteToDoBlock(notionAPIKey, pageID string, order int) error {
 }
 
 // GetAllBlocks retrieves all blocks under a page, optionally filtered by type
+// Handles pagination for pages with more than 100 blocks
 func GetAllBlocks(notionAPIKey, pageID string, filterType string) ([]Block, error) {
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", baseURL+"/blocks/"+pageID+"/children", nil)
-	if err != nil {
-		return nil, fmt.Errorf("error creating request: %v", err)
-	}
-
-	req.Header.Add("accept", "application/json")
-	req.Header.Add("Notion-Version", "2022-06-28")
-	req.Header.Set("Authorization", "Bearer "+notionAPIKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var blockList BlockList
-	err = json.NewDecoder(resp.Body).Decode(&blockList)
-	if err != nil {
-		return nil, err
-	}
-
 	var result []Block
-	for _, block := range blockList.Results {
-		if block.Object == "block" {
-			// If no filter or matches filter, include block
-			if filterType == "" || block.Type == filterType {
-				result = append(result, block)
+	var cursor string
+
+	for {
+		url := baseURL + "/blocks/" + pageID + "/children"
+		if cursor != "" {
+			url += "?start_cursor=" + cursor
+		}
+
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("error creating request: %v", err)
+		}
+
+		req.Header.Add("accept", "application/json")
+		req.Header.Add("Notion-Version", "2022-06-28")
+		req.Header.Set("Authorization", "Bearer "+notionAPIKey)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		var blockList BlockList
+		err = json.NewDecoder(resp.Body).Decode(&blockList)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, block := range blockList.Results {
+			if block.Object == "block" {
+				// If no filter or matches filter, include block
+				if filterType == "" || block.Type == filterType {
+					result = append(result, block)
+				}
 			}
 		}
+
+		// Check if there are more pages
+		if !blockList.HasMore || blockList.NextCursor == "" {
+			break
+		}
+		cursor = blockList.NextCursor
 	}
+
 	return result, nil
 }
 
