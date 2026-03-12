@@ -153,3 +153,147 @@ func TestDeleteToDoBlock(t *testing.T) {
 	}
 
 }
+
+// Tests for block types functionality
+
+func TestIsValidBlockType(t *testing.T) {
+	validTypes := []string{
+		"paragraph", "heading_1", "heading_2", "heading_3",
+		"bulleted_list_item", "numbered_list_item", "to_do",
+		"toggle", "quote", "callout", "divider", "code",
+	}
+
+	for _, bt := range validTypes {
+		if !IsValidBlockType(bt) {
+			t.Errorf("Expected '%s' to be a valid block type", bt)
+		}
+	}
+
+	invalidTypes := []string{"invalid", "unknown", "image", ""}
+	for _, bt := range invalidTypes {
+		if IsValidBlockType(bt) {
+			t.Errorf("Expected '%s' to be an invalid block type", bt)
+		}
+	}
+}
+
+func TestGetSupportedBlockTypeNames(t *testing.T) {
+	names := GetSupportedBlockTypeNames()
+
+	if len(names) != 12 {
+		t.Errorf("Expected 12 block types, got %d", len(names))
+	}
+
+	// Check that list is sorted
+	for i := 1; i < len(names); i++ {
+		if names[i] < names[i-1] {
+			t.Errorf("Block type names not sorted: %s < %s", names[i], names[i-1])
+		}
+	}
+}
+
+func TestGetBlockContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		block    Block
+		expected string
+	}{
+		{
+			name: "to_do block",
+			block: Block{
+				Type: "to_do",
+				ToDo: &ToDo{RichText: []RichText{{PlainText: "Buy milk"}}},
+			},
+			expected: "Buy milk",
+		},
+		{
+			name: "paragraph block",
+			block: Block{
+				Type:      "paragraph",
+				Paragraph: &RichTextBlock{RichText: []RichText{{PlainText: "Hello world"}}},
+			},
+			expected: "Hello world",
+		},
+		{
+			name: "heading_1 block",
+			block: Block{
+				Type:     "heading_1",
+				Heading1: &RichTextBlock{RichText: []RichText{{PlainText: "Title"}}},
+			},
+			expected: "Title",
+		},
+		{
+			name: "divider block",
+			block: Block{
+				Type:    "divider",
+				Divider: &struct{}{},
+			},
+			expected: "───────────",
+		},
+		{
+			name: "empty paragraph",
+			block: Block{
+				Type:      "paragraph",
+				Paragraph: &RichTextBlock{RichText: []RichText{}},
+			},
+			expected: "(empty)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GetBlockContent(tt.block)
+			if result != tt.expected {
+				t.Errorf("GetBlockContent() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetBlockIcon(t *testing.T) {
+	tests := []struct {
+		name     string
+		block    Block
+		expected string
+	}{
+		{
+			name:     "unchecked to_do",
+			block:    Block{Type: "to_do", ToDo: &ToDo{Checked: false}},
+			expected: "☐",
+		},
+		{
+			name:     "checked to_do",
+			block:    Block{Type: "to_do", ToDo: &ToDo{Checked: true}},
+			expected: "☑",
+		},
+		{
+			name:     "paragraph",
+			block:    Block{Type: "paragraph"},
+			expected: "¶",
+		},
+		{
+			name:     "heading_1",
+			block:    Block{Type: "heading_1"},
+			expected: "H1",
+		},
+		{
+			name:     "bulleted_list_item",
+			block:    Block{Type: "bulleted_list_item"},
+			expected: "•",
+		},
+		{
+			name:     "unknown type",
+			block:    Block{Type: "unknown"},
+			expected: "?",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GetBlockIcon(tt.block)
+			if result != tt.expected {
+				t.Errorf("GetBlockIcon() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}
