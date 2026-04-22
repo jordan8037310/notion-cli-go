@@ -1,0 +1,110 @@
+name: notion-cli-go
+
+# Lando v3 config for notion-cli-go.
+# Provides a reproducible Go toolchain matching CI (go 1.21) without
+# requiring Go to be installed on the host.
+#
+# Quickstart:
+#   lando start                 # first-time container build
+#   lando test                  # go test ./...
+#   lando ci                    # gofmt + vet + race tests + gap check
+#   lando cli list              # run the notioncli binary inside the container
+#
+# A local .env at the project root is auto-loaded by Lando and passed into
+# the appserver container (NOTION_API_KEY, NOTION_PAGE_ID, LOCAL_TIMEZONE).
+
+services:
+  appserver:
+    type: go:1.21
+    overrides:
+      environment:
+        # Lando auto-loads project .env; these are explicit defaults so the
+        # container boots even without one.
+        NOTION_API_KEY: ${NOTION_API_KEY:-}
+        NOTION_PAGE_ID: ${NOTION_PAGE_ID:-}
+        LOCAL_TIMEZONE: ${LOCAL_TIMEZONE:-America/New_York}
+        # Keep module/build caches inside the app volume so rebuilds are fast.
+        GOPATH: /app/.lando/go
+        GOCACHE: /app/.lando/go/build-cache
+        GOMODCACHE: /app/.lando/go/mod-cache
+    build_as_root:
+      # Basic host deps for tooling the scripts use (bash, awk, grep already present).
+      - apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates git make
+    run:
+      # Prime the module cache on container build so first `lando test` is fast.
+      - go env -w GOFLAGS="-mod=mod"
+      - go mod download || true
+
+tooling:
+  # Raw passthroughs — invoke any go/gofmt/gopls command inside the container.
+  go:
+    service: appserver
+    description: Run go commands inside the appserver (e.g. lando go test ./...)
+  gofmt:
+    service: appserver
+    description: Run gofmt inside the appserver
+  gopls:
+    service: appserver
+    description: Run gopls (Go language server) inside the appserver
+
+  # Project shortcuts mirror the Makefile targets.
+  build:
+    service: appserver
+    cmd: go build -v ./...
+    description: go build -v ./...
+  test:
+    service: appserver
+    cmd: go test ./...
+    description: go test ./...
+  test-race:
+    service: appserver
+    cmd: go test -race ./...
+    description: Run tests with the race detector
+  test-verbose:
+    service: appserver
+    cmd: go test -v ./...
+    description: Verbose test run
+  vet:
+    service: appserver
+    cmd: go vet ./...
+    description: go vet ./...
+  fmt-check:
+    service: appserver
+    cmd: sh -c 'out=$(gofmt -l .); [ -z "$out" ] || { echo "$out"; exit 1; }'
+    description: Fail if any source file is not gofmt-clean
+  cover:
+    service: appserver
+    cmd: sh -c 'go test -coverprofile=coverage.out -covermode=atomic ./... && go tool cover -func=coverage.out | tail -n 20'
+    description: Generate coverage profile and print per-function coverage
+  check-test-gaps:
+    service: appserver
+    cmd: bash scripts/check-test-coverage.sh
+    description: Flag exported functions without a matching Test*
+  install-golangci-lint:
+    service: appserver
+    cmd: sh -c 'command -v golangci-lint >/dev/null 2>&1 || go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0'
+    description: Install golangci-lint into GOPATH inside the container
+  lint:
+    service: appserver
+    cmd: sh -c 'command -v golangci-lint >/dev/null 2>&1 || go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0; $(go env GOPATH)/bin/golangci-lint run ./...'
+    description: Run golangci-lint (installs on first use)
+  tidy:
+    service: appserver
+    cmd: go mod tidy
+    description: Tidy go.mod
+  ci:
+    service: appserver
+    cmd: sh -c 'set -e; out=$(gofmt -l .); [ -z "$out" ] || { echo "$out"; exit 1; }; go vet ./...; go test -race -coverprofile=coverage.out -covermode=atomic ./...; bash scripts/check-test-coverage.sh'
+    description: Run everything CI runs (fmt-check + vet + race tests + gap gate)
+
+  # Run the actual CLI inside the container: `lando cli list`, `lando cli add "task"`.
+  cli:
+    service: appserver
+    cmd: go run .
+    description: Run the notioncli CLI (e.g. lando cli list)
+
+  # Open a shell in the container for ad-hoc work.
+  shell:
+    service: appserver
+    cmd: bash
+    description: Open a bash shell in the appserver container

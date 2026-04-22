@@ -81,3 +81,48 @@ tidy: ## Tidy go.mod
 .PHONY: clean
 clean: ## Remove build and coverage artifacts
 	rm -f $(COVER_FILE) $(COVER_HTML) notioncli
+
+# ----- Lando runner (containerized Go toolchain) -----
+# See .lando.yml. Use these when Go is not installed on the host, or to
+# verify CI parity. All real work is defined in .lando.yml's `tooling:`
+# block; the Makefile targets are thin shims.
+
+.PHONY: lando-start
+lando-start: ## Start the Lando appserver (builds on first run)
+	lando start
+
+.PHONY: lando-stop
+lando-stop: ## Stop the Lando appserver
+	lando stop
+
+.PHONY: lando-rebuild
+lando-rebuild: ## Rebuild the Lando appserver image
+	lando rebuild -y
+
+.PHONY: lando-test
+lando-test: ## go test ./... inside Lando
+	lando test
+
+.PHONY: lando-test-race
+lando-test-race: ## go test -race ./... inside Lando
+	lando test-race
+
+.PHONY: lando-cover
+lando-cover: ## Coverage profile + summary inside Lando
+	lando cover
+
+.PHONY: lando-check-test-gaps
+lando-check-test-gaps: ## Flag untested exported functions (via Lando)
+	lando check-test-gaps
+
+.PHONY: lando-lint
+lando-lint: ## golangci-lint inside Lando
+	lando lint
+
+.PHONY: lando-ci
+lando-ci: ## Everything CI runs, executed inside Lando
+	lando ci
+
+.PHONY: lando-shell
+lando-shell: ## Open a bash shell in the Lando appserver
+	lando shell
