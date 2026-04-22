@@ -1,0 +1,9 @@
+# One fully-qualified function name per line (format: <package>.<Func>) to exclude
+# from the check-test-coverage.sh gap checker. Prefer writing a test over adding a skip.
+# Lines starting with # are comments.
+#
+# Example:
+#   utils.SetBaseURL
+#
+# Legitimate skips (test-only helpers exported so tests across files can use them):
+utils.SetBaseURL
