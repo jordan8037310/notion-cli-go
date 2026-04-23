@@ -324,10 +324,23 @@ func TestMarkToDoBlockUnCheckedBadOrder(t *testing.T) {
 func TestAddBlock_AllTypes(t *testing.T) {
 	withMock(t)
 	for _, typ := range GetSupportedBlockTypeNames() {
+		// Layout/structural types (table, synced_block, column_list,
+		// column, table_row) are not addable via the simple CLI path —
+		// they need children or a synced-from reference. Their own
+		// not-addable error path is covered by
+		// TestAddBlock_RejectsNonAddableType.
+		if !IsAddableBlockType(typ) {
+			continue
+		}
 		t.Run(typ, func(t *testing.T) {
 			text := "hello"
-			if typ == "divider" {
+			switch typ {
+			case "divider":
 				text = ""
+			case "image", "file", "video", "embed", "bookmark":
+				text = "https://example.com/thing"
+			case "equation":
+				text = "E=mc^2"
 			}
 			if err := AddBlock("fakeKey", "mixedPage", typ, text); err != nil {
 				t.Fatalf("AddBlock(%s): %v", typ, err)
@@ -338,7 +351,7 @@ func TestAddBlock_AllTypes(t *testing.T) {
 
 func TestAddBlock_RejectsUnknownType(t *testing.T) {
 	withMock(t)
-	err := AddBlock("fakeKey", "mixedPage", "image", "nope")
+	err := AddBlock("fakeKey", "mixedPage", "not_a_real_block_type", "nope")
 	if err == nil {
 		t.Fatal("expected error for unsupported block type, got nil")
 	}

@@ -165,7 +165,7 @@ func TestIsValidBlockType(t *testing.T) {
 		}
 	}
 
-	invalidTypes := []string{"invalid", "unknown", "image", ""}
+	invalidTypes := []string{"invalid", "unknown", ""}
 	for _, bt := range invalidTypes {
 		if IsValidBlockType(bt) {
 			t.Errorf("Expected '%s' to be an invalid block type", bt)
@@ -176,8 +176,16 @@ func TestIsValidBlockType(t *testing.T) {
 func TestGetSupportedBlockTypeNames(t *testing.T) {
 	names := GetSupportedBlockTypeNames()
 
-	if len(names) != 12 {
-		t.Errorf("Expected 12 block types, got %d", len(names))
+	// The supported-types map is the source of truth; this guard catches
+	// accidental deletions while still letting #26 and later issues grow
+	// the set without churning this test.
+	if want := len(SupportedBlockTypes); len(names) != want {
+		t.Errorf("Expected %d block types, got %d", want, len(names))
+	}
+	// Floor: the foundation set is 12 types; regressions below that are
+	// a real bug.
+	if len(names) < 12 {
+		t.Errorf("Expected at least 12 block types, got %d", len(names))
 	}
 
 	// Check that list is sorted
