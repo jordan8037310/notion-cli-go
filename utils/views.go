@@ -5,7 +5,9 @@
 package utils
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -28,15 +30,16 @@ var ValidViewTypes = []string{"table", "board", "list", "gallery", "calendar", "
 // View is a placeholder for the Notion view object. The concrete shape
 // depends on a newer Notion API version than the CLI currently pins, so
 // the fields here are deliberately minimal — do not rely on them yet.
-// Config is a loosely-typed map so callers can round-trip arbitrary
-// view-configuration payloads without losing fields once #11 lands.
+// Config is a json.RawMessage so callers can round-trip arbitrary
+// view-configuration payloads byte-for-byte (preserving key order and
+// avoiding the float64 coercion of numeric IDs) once #11 lands.
 type View struct {
-	Object     string                 `json:"object"`
-	ID         string                 `json:"id"`
-	Name       string                 `json:"name,omitempty"`
-	Type       string                 `json:"type,omitempty"`
-	DatabaseID string                 `json:"database_id,omitempty"`
-	Config     map[string]interface{} `json:"config,omitempty"`
+	Object     string          `json:"object"`
+	ID         string          `json:"id"`
+	Name       string          `json:"name,omitempty"`
+	Type       string          `json:"type,omitempty"`
+	DatabaseID string          `json:"database_id,omitempty"`
+	Config     json.RawMessage `json:"config,omitempty"`
 }
 
 // CreateViewRequest is the body for a future POST to the views endpoint.
@@ -48,10 +51,10 @@ type View struct {
 // marshal this struct directly to the Notion API body with nothing more
 // than `json.Marshal`.
 type CreateViewRequest struct {
-	DatabaseID string                 `json:"database_id"`
-	Name       string                 `json:"name"`
-	Type       string                 `json:"type"`
-	Config     map[string]interface{} `json:"config,omitempty"`
+	DatabaseID string          `json:"database_id"`
+	Name       string          `json:"name"`
+	Type       string          `json:"type"`
+	Config     json.RawMessage `json:"config,omitempty"`
 }
 
 // Validate returns a non-nil error if the request is missing a required
@@ -81,18 +84,35 @@ func (r CreateViewRequest) Validate() error {
 // zero-value "nothing to update" case so callers don't silently hit the
 // wire with a no-op.
 type UpdateViewRequest struct {
-	Name   string                 `json:"name,omitempty"`
-	Config map[string]interface{} `json:"config,omitempty"`
+	Name   string          `json:"name,omitempty"`
+	Config json.RawMessage `json:"config,omitempty"`
 }
 
 // Validate returns a non-nil error when the update request carries no
-// fields at all. This mirrors PATCH semantics: sending an empty body
-// should be an authoring error, not a silent round-trip.
+// meaningful fields. An empty Name combined with an absent, empty, or
+// null Config is treated as "nothing to update" so callers don't
+// silently hit the wire with a no-op PATCH. A Config of `{}` or `[]` is
+// also rejected for the same reason — the caller clearly intended to
+// send something, but didn't.
 func (r UpdateViewRequest) Validate() error {
-	if r.Name == "" && len(r.Config) == 0 {
+	if r.Name == "" && isEmptyRawJSON(r.Config) {
 		return errors.New("update view: at least one of name or config is required")
 	}
 	return nil
+}
+
+// isEmptyRawJSON reports whether a json.RawMessage carries no useful
+// payload: nil, zero-length, literal null, {} or [] (with whitespace).
+func isEmptyRawJSON(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	trimmed := bytes.TrimSpace(raw)
+	switch string(trimmed) {
+	case "", "null", "{}", "[]":
+		return true
+	}
+	return false
 }
 
 // ViewClient is the typed resource client for the Notion views API.

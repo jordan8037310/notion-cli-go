@@ -2,6 +2,7 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -198,7 +199,7 @@ func TestViews_Update_ValidationBeforeStub(t *testing.T) {
 // name) passes validation and still dispatches to the stub.
 func TestViews_Update_ConfigOnly(t *testing.T) {
 	client := NewViewClient(NewClient("k", WithBaseURL("http://127.0.0.1:0")))
-	req := UpdateViewRequest{Config: map[string]interface{}{"sort": "asc"}}
+	req := UpdateViewRequest{Config: json.RawMessage(`{"sort":"asc"}`)}
 	_, err := client.Update(context.Background(), "view-id", req)
 	if !errors.Is(err, ErrViewsNotSupported) {
 		t.Errorf("Update: want ErrViewsNotSupported for config-only request, got %v", err)
@@ -250,13 +251,23 @@ func TestValidate_CreateViewRequest(t *testing.T) {
 
 // TestValidate_UpdateViewRequest exercises the update validator.
 // Named TestValidate_* for the same gap-check reason documented on
-// TestValidate_CreateViewRequest above.
+// TestValidate_CreateViewRequest above. Also locks in that an empty
+// RawMessage payload (nil, "", "null", "{}", "[]") is rejected the
+// same way as a missing field so callers can't silently send a no-op
+// PATCH once #11 wires up the real request.
 func TestValidate_UpdateViewRequest(t *testing.T) {
 	if err := (UpdateViewRequest{Name: "n"}).Validate(); err != nil {
 		t.Errorf("Validate name-only: %v", err)
 	}
-	if err := (UpdateViewRequest{Config: map[string]interface{}{"k": "v"}}).Validate(); err != nil {
+	if err := (UpdateViewRequest{Config: json.RawMessage(`{"k":"v"}`)}).Validate(); err != nil {
 		t.Errorf("Validate config-only: %v", err)
+	}
+	emptyCases := []string{``, `null`, `{}`, `[]`, `  {} `}
+	for _, c := range emptyCases {
+		got := UpdateViewRequest{Config: json.RawMessage(c)}
+		if err := got.Validate(); err == nil {
+			t.Errorf("Validate empty-config %q: want error, got nil", c)
+		}
 	}
 	if err := (UpdateViewRequest{}).Validate(); err == nil {
 		t.Errorf("Validate empty: want error, got nil")

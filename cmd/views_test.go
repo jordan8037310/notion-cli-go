@@ -378,7 +378,8 @@ func TestViews_ErrExposedViaUtils(t *testing.T) {
 
 // TestViews_ReadConfigJSON covers readConfigJSON directly so the helper
 // has coverage independent of the RunE paths. Exercises the empty-path
-// shortcut and the empty-file rejection.
+// shortcut, the empty-file rejection, and the round-trip-fidelity goal
+// of json.RawMessage (bytes preserved verbatim, numbers not coerced).
 func TestViews_ReadConfigJSON(t *testing.T) {
 	if got, err := readConfigJSON(""); err != nil || got != nil {
 		t.Errorf("readConfigJSON(\"\") = (%v, %v); want (nil, nil)", got, err)
@@ -394,15 +395,16 @@ func TestViews_ReadConfigJSON(t *testing.T) {
 	}
 
 	good := filepath.Join(dir, "good.json")
-	if err := os.WriteFile(good, []byte(`{"a":1}`), 0o600); err != nil {
+	payload := []byte(`{"a":1,"big":12345678901234567890}`)
+	if err := os.WriteFile(good, payload, 0o600); err != nil {
 		t.Fatalf("write good: %v", err)
 	}
 	got, err := readConfigJSON(good)
 	if err != nil {
 		t.Fatalf("readConfigJSON(good) err = %v", err)
 	}
-	if got["a"] != float64(1) { // JSON numbers decode to float64
-		t.Errorf("readConfigJSON(good)[a] = %v, want 1", got["a"])
+	if string(got) != string(payload) {
+		t.Errorf("readConfigJSON(good) = %q; want bytes preserved %q", string(got), string(payload))
 	}
 }
 
