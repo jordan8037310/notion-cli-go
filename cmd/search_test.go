@@ -427,18 +427,42 @@ func TestEmitSearchJSON(t *testing.T) {
 	}
 }
 
-// TestEmitSearchError verifies both the human and JSON branches run without
-// panicking. We can't easily capture stderr without rewiring, but this at
-// least keeps the code path under coverage.
+// TestEmitSearchError verifies both the human and JSON branches write to
+// cmd.ErrOrStderr(). The JSON branch must emit a parseable single-line
+// error object so stdout stays valid NDJSON.
 func TestEmitSearchError(t *testing.T) {
+	// Restore package-level flag even if the test aborts mid-run.
+	prev := searchJSON
+	t.Cleanup(func() { searchJSON = prev })
+
 	c := &cobra.Command{}
-	var out bytes.Buffer
-	c.SetOut(&out)
+	var stdout, stderr bytes.Buffer
+	c.SetOut(&stdout)
+	c.SetErr(&stderr)
+
 	searchJSON = false
 	emitSearchError(c, errorString("human"))
+	if !strings.Contains(stderr.String(), "human") {
+		t.Errorf("human branch did not write to stderr: %q", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("human branch wrote to stdout: %q", stdout.String())
+	}
+
+	stderr.Reset()
+	stdout.Reset()
 	searchJSON = true
-	emitSearchError(c, errorString("json"))
-	searchJSON = false
+	emitSearchError(c, errorString("boom"))
+	if stdout.Len() != 0 {
+		t.Errorf("json branch wrote to stdout: %q", stdout.String())
+	}
+	var obj map[string]string
+	if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &obj); err != nil {
+		t.Fatalf("json branch stderr not a valid JSON object: %v (%q)", err, stderr.String())
+	}
+	if obj["error"] != "boom" {
+		t.Errorf("json error payload = %q, want %q", obj["error"], "boom")
+	}
 }
 
 func TestResetSearchFlags(t *testing.T) {
@@ -469,6 +493,78 @@ func TestRunSearch(t *testing.T) {
 	}
 	if atomic.LoadInt64(&stats.calls) != 1 {
 		t.Errorf("want exactly 1 search call, got %d", stats.calls)
+	}
+}
+
+// TestTruncateRunes asserts the rune-safe truncator preserves multi-byte
+// characters and appends an ellipsis only when it actually cuts.
+func TestTruncateRunes(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{"shorter than max", "abc", 10, "abc"},
+		{"exactly max ascii", "abcdefghij", 10, "abcdefghij"},
+		{"truncate ascii", "abcdefghijk", 10, "abcdefg..."},
+		{"truncate emoji mid-string preserves runes", "hello " + strings.Repeat("🙂", 20), 10, "hello 🙂..."},
+		{"truncate CJK preserves runes", strings.Repeat("日本語", 20), 10, "日本語日本語日..."},
+		{"max below 4 passes through", "abcdefghij", 3, "abcdefghij"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateRunes(tt.in, tt.max)
+			if got != tt.want {
+				t.Errorf("truncateRunes(%q, %d)=%q want=%q", tt.in, tt.max, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestValidateSearchPageSize covers the client-side 1-100 bounds check.
+func TestValidateSearchPageSize(t *testing.T) {
+	tests := []struct {
+		in      int
+		wantErr bool
+	}{
+		{0, false},
+		{1, false},
+		{50, false},
+		{100, false},
+		{-1, true},
+		{101, true},
+		{99999, true},
+	}
+	for _, tt := range tests {
+		t.Run("", func(t *testing.T) {
+			err := validateSearchPageSize(tt.in)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateSearchPageSize(%d) err=%v wantErr=%v", tt.in, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestSearchCmdInvalidPageSize verifies the client-side bounds check rejects
+// out-of-range --page-size values before issuing any HTTP request.
+func TestSearchCmdInvalidPageSize(t *testing.T) {
+	var stats searchHandlerStats
+	overlaySearchHandler(t, &stats, func(req map[string]interface{}) map[string]interface{} {
+		return map[string]interface{}{"object": "list", "has_more": false, "results": []map[string]interface{}{}}
+	})
+
+	resetSearchFlags()
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"search", "x", "--page-size", "500"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected error on --page-size 500, got nil")
+	}
+	if atomic.LoadInt64(&stats.calls) != 0 {
+		t.Errorf("search should not be issued on bad --page-size; got %d calls", stats.calls)
 	}
 }
 

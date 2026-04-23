@@ -241,8 +241,47 @@ func TestSearchAll_HTTPError(t *testing.T) {
 	defer SetBaseURL(prev)
 
 	sc := newClientForSearch()
-	if _, err := sc.SearchAll(context.Background(), SearchRequest{Query: "anything"}, 0); err == nil {
+	_, err := sc.SearchAll(context.Background(), SearchRequest{Query: "anything"}, 0)
+	if err == nil {
 		t.Fatal("expected error on 401, got nil")
+	}
+	// Page 1 failures should be wrapped with "search page 1:".
+	if !strings.Contains(err.Error(), "search page 1:") {
+		t.Errorf("error missing page-number wrap: %v", err)
+	}
+}
+
+// TestSearchAll_MidPaginationError verifies that a failure on page 2 of a
+// walk is wrapped with the correct page number so callers can see how far
+// the walk got before failing.
+func TestSearchAll_MidPaginationError(t *testing.T) {
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(SearchResponse{
+				Object:     "list",
+				Results:    []SearchResult{},
+				HasMore:    true,
+				NextCursor: "cursor-2",
+			})
+			return
+		}
+		http.Error(w, `{"object":"error","code":"rate_limited"}`, http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	prev := baseURL
+	SetBaseURL(srv.URL)
+	defer SetBaseURL(prev)
+
+	sc := newClientForSearch()
+	_, err := sc.SearchAll(context.Background(), SearchRequest{Query: "sweep"}, 0)
+	if err == nil {
+		t.Fatal("expected mid-pagination error, got nil")
+	}
+	if !strings.Contains(err.Error(), "search page 2:") {
+		t.Errorf("error missing page-2 wrap: %v", err)
 	}
 }
 

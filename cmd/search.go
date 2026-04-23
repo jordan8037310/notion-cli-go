@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"notioncli/utils"
@@ -66,6 +65,11 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if err := validateSearchPageSize(searchPageSize); err != nil {
+		emitSearchError(cmd, err)
+		return err
+	}
+
 	notionAPIKey, _ := utils.SetAPIConfig()
 	client := utils.NewSearchClient(utils.NewClient(notionAPIKey, utils.WithBaseURL(utils.GetBaseURL())))
 
@@ -100,6 +104,19 @@ func buildSearchFilter(typeFlag string) (*utils.SearchFilter, error) {
 		return &utils.SearchFilter{Property: "object", Value: "database"}, nil
 	}
 	return nil, fmt.Errorf("invalid --type %q (want pages|databases)", typeFlag)
+}
+
+// validateSearchPageSize enforces the Notion API bounds client-side so we
+// don't spend a round-trip on a value the server will reject. 0 means
+// "use the server default" and is allowed. Valid range otherwise is 1-100.
+func validateSearchPageSize(pageSize int) error {
+	if pageSize == 0 {
+		return nil
+	}
+	if pageSize < 1 || pageSize > 100 {
+		return fmt.Errorf("invalid --page-size %d (want 1-100, or 0 for server default)", pageSize)
+	}
+	return nil
 }
 
 // emitSearchJSON writes one result per line to stdout as the Notion API
@@ -145,9 +162,7 @@ func emitSearchTable(cmd *cobra.Command, results []utils.SearchResult) error {
 		if title == "" {
 			title = "(untitled)"
 		}
-		if len(title) > 60 {
-			title = title[:57] + "..."
-		}
+		title = truncateRunes(title, 60)
 		edited := formatSearchTime(r.LastEditedTime)
 		fmt.Fprintf(out, "  %s  %-60s  %-8s  %s  %s\n", icon, title, r.Object, r.URL, edited)
 	}
@@ -158,16 +173,17 @@ func emitSearchTable(cmd *cobra.Command, results []utils.SearchResult) error {
 
 // emitSearchError writes a single-line JSON error object to stderr when
 // --json is set (keeps the stdout stream valid NDJSON for piping), or a
-// red human-readable message otherwise. Does not call os.Exit; the RunE
-// return value drives the final exit code via cobra.
+// red human-readable message otherwise. Output is routed through
+// cmd.ErrOrStderr() so tests can capture the stream. Does not call
+// os.Exit; the RunE return value drives the final exit code via cobra.
 func emitSearchError(cmd *cobra.Command, err error) {
+	errOut := cmd.ErrOrStderr()
 	if searchJSON {
-		enc := json.NewEncoder(os.Stderr)
+		enc := json.NewEncoder(errOut)
 		_ = enc.Encode(map[string]string{"error": err.Error()})
 		return
 	}
-	color.Red("Error: %v", err)
-	_ = cmd // reserved for future SetErr wiring; avoids unused-param lint
+	fmt.Fprintln(errOut, color.RedString("Error: %v", err))
 }
 
 // extractSearchTitle digs into the raw Notion payload to find the object's
@@ -206,6 +222,20 @@ func extractSearchTitle(r utils.SearchResult) string {
 		}
 	}
 	return ""
+}
+
+// truncateRunes shortens s to at most max *runes*, appending "..." when
+// truncation occurs. Rune-safe so multi-byte characters (emoji, CJK) are
+// never cut mid-codepoint. max must be >= 4 to leave room for the ellipsis.
+func truncateRunes(s string, max int) string {
+	if max < 4 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max-3]) + "..."
 }
 
 // formatSearchTime renders a Notion ISO-8601 timestamp as YYYY-MM-DD HH:MM
