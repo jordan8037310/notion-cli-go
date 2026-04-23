@@ -454,16 +454,15 @@ func TestPrintDatabase(t *testing.T) {
 	}
 }
 
-// TestPrintQueryResults covers the empty-results branch (prints the yellow
-// "No results." notice via color, no write to our writer) and the NDJSON
-// pipe-friendly branch.
+// TestPrintQueryResults covers the empty-results branch (routes the
+// "No results." banner through the supplied writer so jq-piped NDJSON
+// consumers don't see stdout-direct banner noise) and the happy-path
+// NDJSON branch.
 func TestPrintQueryResults(t *testing.T) {
 	var buf strings.Builder
 	printQueryResults(&buf, nil)
-	// color.Yellow writes to stderr/stdout via fatih/color, not through our
-	// writer; assert our writer stayed empty in the no-results case.
-	if buf.Len() != 0 {
-		t.Errorf("empty results wrote %q to writer; expected nothing", buf.String())
+	if !strings.Contains(buf.String(), "No results.") {
+		t.Errorf("empty results did not emit banner via writer; got %q", buf.String())
 	}
 
 	buf.Reset()

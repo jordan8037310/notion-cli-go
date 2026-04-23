@@ -232,7 +232,11 @@ func printQueryResults(w io.Writer, pages []utils.Page) {
 		w = os.Stdout
 	}
 	if len(pages) == 0 {
-		color.Yellow("No results.")
+		// Route the empty-results banner through the supplied writer so
+		// NDJSON consumers piping through jq don't see banner noise on
+		// stdout. color.YellowString returns the ANSI-coloured string
+		// without writing directly; fmt.Fprintln honours the cmd writer.
+		fmt.Fprintln(w, color.YellowString("No results."))
 		return
 	}
 	for _, p := range pages {
