@@ -87,11 +87,17 @@ var blocksListCmd = &cobra.Command{
 			return nil
 		}
 
-		formatted, typeCounts, err := utils.FormatAllBlocks(
+		// --resolve-mentions (persistent) opts into page-title
+		// expansion for the snippet column. When off, buildPageResolver
+		// returns utils.NoPageResolver{} and the output stays
+		// byte-identical to the pre-resolver rendering.
+		resolver := buildPageResolver(notionAPIKey)
+		formatted, typeCounts, err := utils.FormatAllBlocksWithResolver(
 			notionAPIKey,
 			pageID,
 			localTimezone,
 			blockType,
+			resolver,
 		)
 		if err != nil {
 			color.Red("Error: %v", err)
