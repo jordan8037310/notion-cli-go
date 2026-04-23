@@ -38,3 +38,19 @@ func TestRootCmdSubcommandsRegistered(t *testing.T) {
 		}
 	}
 }
+
+// TestExecuteHappyPath drives the exported Execute() function through the
+// --help branch so its happy path is covered without tripping the os.Exit
+// that fires on error. The function prints a color banner to stdout — we
+// don't assert banner contents, only that Execute returns without exiting.
+func TestExecuteHappyPath(t *testing.T) {
+	rootCmd.SetArgs([]string{"--help"})
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	// Execute() calls os.Exit(1) on error. --help never errors, so this
+	// completes cleanly. If --help ever starts returning non-nil from
+	// cobra, this test will terminate the test binary — at which point
+	// the CI log will make the breakage obvious.
+	Execute()
+}
