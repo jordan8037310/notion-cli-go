@@ -169,5 +169,8 @@ func resetGlobalOutputFlags() {
 	globalPretty = false
 	globalOutput = ""
 	globalPage = ""
-	aliasStoreOverride = nil
+	// Intentionally do NOT reset aliasStoreOverride here: test helpers
+	// install it via aliasTestEnv(t) and depend on it surviving the call
+	// to resetRootCmdArgs(). t.Cleanup restores the prior value at test
+	// teardown.
 }
