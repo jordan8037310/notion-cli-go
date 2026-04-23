@@ -5,6 +5,7 @@
 package utils
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +83,48 @@ func TestAliasStore_LoadRejectsMalformed(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "key: value") {
 		t.Errorf("Load error does not cite expected shape: %v", err)
+	}
+}
+
+// TestAliasStore_LoadRejectsEmptyValue guards the parser contract for a
+// line shaped `key:` (no value after the colon). Silently storing "" as
+// the id would surface later as an opaque Notion 400 during Resolve;
+// rejecting at parse time with the line number keeps the failure local
+// and actionable. Symmetric with the empty-key rejection on the line
+// immediately above it in the parser.
+func TestAliasStore_LoadRejectsEmptyValue(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		line int
+		key  string
+	}{
+		{name: "bare colon", body: "work:\n", line: 1, key: "work"},
+		{name: "trailing spaces", body: "journal:    \n", line: 1, key: "journal"},
+		{name: "empty after valid line", body: "work: 11111111111111111111111111111111\njournal:\n", line: 2, key: "journal"},
+		{name: "quoted empty", body: "work: \"\"\n", line: 1, key: "work"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			if err := os.WriteFile(s.Path, []byte(tc.body), 0o600); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			_, err := s.Load()
+			if err == nil {
+				t.Fatal("Load: expected error for empty value")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "empty value") {
+				t.Errorf("error does not mention empty value: %v", err)
+			}
+			if !strings.Contains(msg, fmt.Sprintf(":%d:", tc.line)) {
+				t.Errorf("error does not cite line %d: %v", tc.line, err)
+			}
+			if !strings.Contains(msg, fmt.Sprintf("%q", tc.key)) {
+				t.Errorf("error does not cite key %q: %v", tc.key, err)
+			}
+		})
 	}
 }
 

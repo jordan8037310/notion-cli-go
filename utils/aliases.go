@@ -94,8 +94,20 @@ func (s *AliasStore) Load() (map[string]string, error) {
 		}
 		// Strip optional surrounding quotes — Notion ids are unquoted in
 		// practice but we do not want a user-written `'id'` to silently
-		// become part of the stored value.
+		// become part of the stored value. Note: strings.Trim strips any
+		// leading/trailing quote character regardless of pairing, so
+		// mismatched inputs like `"'foo` collapse to `foo`. That edge
+		// case never occurs for real Notion ids (they are pure hex), and
+		// rejecting it would add complexity for no user-facing benefit.
 		value = strings.Trim(value, `"'`)
+		// Reject empty values symmetrically with the empty-key check
+		// above: a line like `work:` (missing id) is almost certainly a
+		// user mistake — silently storing "" would surface later as an
+		// opaque Notion 400 at Resolve time. Flag it here with the line
+		// number so the fix is obvious.
+		if value == "" {
+			return nil, fmt.Errorf("alias store: %s:%d: empty value for %q", s.Path, lineNum, key)
+		}
 		out[key] = value
 	}
 	if err := scanner.Err(); err != nil {
