@@ -52,13 +52,7 @@ var blocksListCmd = &cobra.Command{
 			if err != nil {
 				return jsonErrorOr(cmd, fmt.Errorf("blocks list: %w", err))
 			}
-			out := cmd.OutOrStdout()
-			for _, b := range blocks {
-				if err := emitJSON(out, b); err != nil {
-					return jsonErrorOr(cmd, err)
-				}
-			}
-			return nil
+			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), blocks))
 		}
 
 		localTimezone, err := utils.GetLocalTimeZone()

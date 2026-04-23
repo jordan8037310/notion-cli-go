@@ -122,11 +122,37 @@ func validateSearchPageSize(pageSize int) error {
 	return nil
 }
 
-// emitSearchJSON writes one result per line to stdout as the Notion API
-// returned it. This is the first --json consumer in the CLI, so the shape
-// is deliberately minimal: raw pass-through, no envelope.
+// emitSearchJSON writes search results to stdout as the Notion API
+// returned them (Raw pass-through, no envelope). Compact NDJSON by
+// default; a single pretty-printed JSON array when --pretty is set.
+// The Raw pass-through preserves any Notion fields the CLI does not
+// model — we deliberately avoid re-marshalling the typed struct for
+// the compact case so unknown keys survive the round-trip.
 func emitSearchJSON(cmd *cobra.Command, results []utils.SearchResult) error {
 	out := cmd.OutOrStdout()
+	if globalPretty {
+		// Pretty-print a single JSON array so the output is a single
+		// valid JSON document. We unmarshal Raw into interface{} so
+		// the re-marshal preserves every field the API returned.
+		arr := make([]interface{}, 0, len(results))
+		for _, r := range results {
+			raw := r.Raw
+			if len(raw) == 0 {
+				buf, err := json.Marshal(r)
+				if err != nil {
+					return fmt.Errorf("marshal result: %w", err)
+				}
+				raw = buf
+			}
+			var obj interface{}
+			if err := json.Unmarshal(raw, &obj); err != nil {
+				return fmt.Errorf("unmarshal result: %w", err)
+			}
+			arr = append(arr, obj)
+		}
+		return emitJSON(out, arr)
+	}
+	// Compact NDJSON: write the Raw bytes verbatim, one per line.
 	for _, r := range results {
 		raw := r.Raw
 		if len(raw) == 0 {
