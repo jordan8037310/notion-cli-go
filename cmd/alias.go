@@ -97,7 +97,16 @@ var pagesListAliasesCmd = &cobra.Command{
 		}
 
 		if globalJSON {
-			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), entries))
+			// emitList writes N NDJSON lines (or a pretty array) and
+			// returns its own descriptive error on encoder failure. We
+			// return that error verbatim rather than wrapping it in
+			// jsonErrorOr — the latter would write an extra JSON error
+			// record on the error path, which combined with partial
+			// per-element encodes from emitList would mean more than N
+			// lines on stdout/stderr. `return emitList(...)` keeps the
+			// line-count contract: exactly N lines on success, cobra's
+			// own non-zero exit on failure.
+			return emitList(cmd.OutOrStdout(), entries)
 		}
 
 		if len(entries) == 0 {

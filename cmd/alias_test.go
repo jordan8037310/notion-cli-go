@@ -155,6 +155,64 @@ func TestPages_ListAliases_Populated(t *testing.T) {
 	}
 }
 
+// TestPages_ListAliases_JSON_LineCount is the regression test for the
+// reviewer's --json double-emit finding: with N aliases the command must
+// emit exactly N lines on stdout, no header, no trailing envelope, no
+// spillover from the human-output path. Three aliases is the minimum
+// cardinality that would surface "one extra" or "one too many" bugs in
+// either direction (empty trailing newline, double-encode, stray banner).
+// Both stdout and stderr are piped into the same buffer so a spurious
+// JSON error record from jsonErrorOr would push the count to 4 and fail
+// this assertion.
+func TestPages_ListAliases_JSON_LineCount(t *testing.T) {
+	store := aliasTestEnv(t)
+	seeds := []struct{ name, id string }{
+		{"alpha", "11111111111111111111111111111111"},
+		{"beta", "22222222222222222222222222222222"},
+		{"gamma", "33333333333333333333333333333333"},
+	}
+	for _, s := range seeds {
+		if err := store.Set(s.name, s.id); err != nil {
+			t.Fatalf("seed %s: %v", s.name, err)
+		}
+	}
+
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"pages", "list-aliases", "--json"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	// Use the raw byte count of newlines rather than strings.Split after
+	// TrimSpace: we want to count exactly N '\n' terminators. Any extra
+	// line (even a blank one) would inflate the count and fail.
+	raw := out.String()
+	got := strings.Count(raw, "\n")
+	if got != len(seeds) {
+		t.Fatalf("newline count=%d want %d; raw=%q", got, len(seeds), raw)
+	}
+	// Every line must be a decodable JSON object with the expected shape.
+	lines := strings.Split(strings.TrimRight(raw, "\n"), "\n")
+	if len(lines) != len(seeds) {
+		t.Fatalf("split lines=%d want %d; raw=%q", len(lines), len(seeds), raw)
+	}
+	for i, line := range lines {
+		var rec struct {
+			Name string `json:"name"`
+			ID   string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("line %d: decode %q: %v", i, line, err)
+		}
+		if rec.Name != seeds[i].name || rec.ID != seeds[i].id {
+			t.Errorf("line %d: got {%q,%q} want {%q,%q}", i, rec.Name, rec.ID, seeds[i].name, seeds[i].id)
+		}
+	}
+}
+
 // TestPages_ListAliases_JSON asserts the --json NDJSON shape: one
 // {"name":..,"id":..} object per line, in alphabetical order.
 func TestPages_ListAliases_JSON(t *testing.T) {
