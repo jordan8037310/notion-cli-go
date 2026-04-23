@@ -54,7 +54,7 @@ type FileUploadRequest struct {
 
 // FileUploadResponse is the envelope Notion returns from
 // POST /v1/file_uploads. UploadURL is the pre-signed URL to which raw
-// bytes are PUT as multipart/form-data in step 2.
+// bytes are POSTed as multipart/form-data in step 2.
 type FileUploadResponse struct {
 	Object     string `json:"object"`
 	ID         string `json:"id"`
@@ -154,7 +154,7 @@ func (f *FileClient) Upload(ctx context.Context, path string) (*FileRef, error) 
 		return nil, fmt.Errorf("upload %q: create response missing id or upload_url", filename)
 	}
 
-	// Step 2: PUT the file bytes to the pre-signed URL as
+	// Step 2: POST the file bytes to the pre-signed URL as
 	// multipart/form-data. Notion's docs specify the field name "file".
 	if err := f.putMultipart(ctx, createResp.UploadURL, path, filename); err != nil {
 		return nil, fmt.Errorf("upload %q: send: %w", filename, err)
@@ -166,7 +166,7 @@ func (f *FileClient) Upload(ctx context.Context, path string) (*FileRef, error) 
 }
 
 // putMultipart streams the file at path to the given uploadURL as a
-// multipart/form-data PUT with a single "file" part. The body is
+// multipart/form-data POST with a single "file" part. The body is
 // buffered in memory (bounded by MaxFileUploadBytes) so the multipart
 // Content-Length is known ahead of the Notion API's strict parser.
 func (f *FileClient) putMultipart(ctx context.Context, uploadURL, path, filename string) error {
