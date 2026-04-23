@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -429,5 +431,234 @@ func TestBlocksDeleteDispatch(t *testing.T) {
 	}
 	if atomic.LoadInt64(&deleted) == 0 {
 		t.Error("blocks delete did not DELETE a block")
+	}
+}
+
+// TestBlocksAddFlags_RichTextJSONFlag asserts the --rich-text-json flag
+// is registered on the add subcommand with the expected shape.
+func TestBlocksAddFlags_RichTextJSONFlag(t *testing.T) {
+	add := findBlocksSubcommand(t, "add")
+	f := add.Flag("rich-text-json")
+	if f == nil {
+		t.Fatal("blocks add: --rich-text-json flag not registered")
+	}
+	if f.Value.Type() != "string" {
+		t.Errorf("blocks add: --rich-text-json type = %q, want string", f.Value.Type())
+	}
+	if f.DefValue != "" {
+		t.Errorf("blocks add: --rich-text-json default = %q, want empty", f.DefValue)
+	}
+}
+
+// TestBlocksAddArgs_RichTextJSONXORText covers the mutual-exclusion
+// between --rich-text-json and the positional text arg. Uses the Args
+// func directly so no mock is needed.
+func TestBlocksAddArgs_RichTextJSONXORText(t *testing.T) {
+	add := findBlocksSubcommand(t, "add")
+	t.Cleanup(func() { blocksAddRichTextJSON = "" })
+
+	// With flag set: zero args ok, one arg must error.
+	blocksAddRichTextJSON = "spec.json"
+	if err := add.Args(add, []string{}); err != nil {
+		t.Errorf("zero args with --rich-text-json: err = %v, want nil", err)
+	}
+	if err := add.Args(add, []string{"oops"}); err == nil {
+		t.Error("positional + --rich-text-json: err = nil, want mutual-exclusion error")
+	}
+
+	// Flag cleared: the old MinimumNArgs(1) contract returns.
+	blocksAddRichTextJSON = ""
+	if err := add.Args(add, []string{}); err == nil {
+		t.Error("zero args without flag: err = nil, want MinimumNArgs error")
+	}
+	if err := add.Args(add, []string{"hello"}); err != nil {
+		t.Errorf("one arg without flag: err = %v, want nil", err)
+	}
+}
+
+// TestBlocksAddRichTextJSON_Dispatch asserts the happy path: given a
+// valid rich-text JSON file, the command issues a PATCH carrying the
+// multi-segment body (annotations preserved, more than one segment).
+func TestBlocksAddRichTextJSON_Dispatch(t *testing.T) {
+	srv := withCmdEnv(t)
+
+	var patched int64
+	var body []byte
+	origHandler := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/blocks/pageID/children") {
+			atomic.AddInt64(&patched, 1)
+			body, _ = io.ReadAll(r.Body)
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+
+	// Write a fixture file with two segments (annotations on segment 2)
+	// in an isolated tempdir so the test survives repeated runs.
+	dir := t.TempDir()
+	spec := filepath.Join(dir, "rt.json")
+	payload := `[
+		{"type":"text","text":{"content":"hello "},"annotations":{"bold":false,"italic":false,"strikethrough":false,"underline":false,"code":false,"color":"default"}},
+		{"type":"text","text":{"content":"world"},"annotations":{"bold":true,"italic":false,"strikethrough":false,"underline":false,"code":false,"color":"red"}}
+	]`
+	if err := os.WriteFile(spec, []byte(payload), 0o600); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+
+	blockType = ""
+	blocksAddRichTextJSON = ""
+	t.Cleanup(func() { blocksAddRichTextJSON = "" })
+
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "add", "--rich-text-json", spec, "-t", "paragraph"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(blocks add --rich-text-json): %v", err)
+	}
+
+	if atomic.LoadInt64(&patched) == 0 {
+		t.Fatal("blocks add --rich-text-json did not PATCH /blocks/pageID/children")
+	}
+	wire := string(body)
+	// Outbound body must carry both segments with annotations.
+	if !strings.Contains(wire, `"content":"hello "`) || !strings.Contains(wire, `"content":"world"`) {
+		t.Errorf("outbound body missing segments: %s", wire)
+	}
+	if !strings.Contains(wire, `"bold":true`) {
+		t.Errorf("outbound body missing annotation flag: %s", wire)
+	}
+	if !strings.Contains(wire, `"color":"red"`) {
+		t.Errorf("outbound body missing color annotation: %s", wire)
+	}
+}
+
+// TestBlocksAddRichTextJSON_Malformed asserts that invalid JSON files
+// do not issue a PATCH and surface an error instead. In --json mode the
+// error is written to stderr as a JSON envelope.
+func TestBlocksAddRichTextJSON_Malformed(t *testing.T) {
+	srv := withCmdEnv(t)
+
+	var patched int64
+	origHandler := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/blocks/pageID/children") {
+			atomic.AddInt64(&patched, 1)
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+
+	dir := t.TempDir()
+	spec := filepath.Join(dir, "rt.json")
+	if err := os.WriteFile(spec, []byte(`not-an-array`), 0o600); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+
+	blockType = ""
+	blocksAddRichTextJSON = ""
+	t.Cleanup(func() { blocksAddRichTextJSON = "" })
+
+	resetRootCmdArgs()
+	var out, errBuf bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errBuf)
+	// Use --json so the error surfaces as a returned error on stderr
+	// (the text path swallows errors and returns nil from RunE).
+	rootCmd.SetArgs([]string{"--json", "blocks", "add", "--rich-text-json", spec, "-t", "paragraph"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected error for malformed --rich-text-json, got nil")
+	}
+	if atomic.LoadInt64(&patched) != 0 {
+		t.Error("malformed --rich-text-json should not issue a PATCH")
+	}
+	if !strings.Contains(errBuf.String(), "rich-text JSON") {
+		t.Errorf("stderr missing parse error: %q", errBuf.String())
+	}
+}
+
+// TestBlocksAddRichTextJSON_MissingFile asserts the I/O error surfaces
+// cleanly and does not PATCH.
+func TestBlocksAddRichTextJSON_MissingFile(t *testing.T) {
+	srv := withCmdEnv(t)
+
+	var patched int64
+	origHandler := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/blocks/pageID/children") {
+			atomic.AddInt64(&patched, 1)
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+
+	blockType = ""
+	blocksAddRichTextJSON = ""
+	t.Cleanup(func() { blocksAddRichTextJSON = "" })
+
+	resetRootCmdArgs()
+	var out, errBuf bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errBuf)
+	rootCmd.SetArgs([]string{"--json", "blocks", "add", "--rich-text-json", "/does/not/exist.json", "-t", "paragraph"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected error for missing --rich-text-json file, got nil")
+	}
+	if atomic.LoadInt64(&patched) != 0 {
+		t.Error("missing --rich-text-json should not issue a PATCH")
+	}
+}
+
+// TestBlocksAddRichTextJSON_MutualExclusion verifies the Args check
+// fires when both --rich-text-json and a positional text arg are
+// supplied via the command line.
+func TestBlocksAddRichTextJSON_MutualExclusion(t *testing.T) {
+	withCmdEnv(t)
+
+	dir := t.TempDir()
+	spec := filepath.Join(dir, "rt.json")
+	if err := os.WriteFile(spec, []byte(`[{"type":"text","text":{"content":"x"}}]`), 0o600); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+
+	blockType = ""
+	blocksAddRichTextJSON = ""
+	t.Cleanup(func() { blocksAddRichTextJSON = "" })
+
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "add", "hello", "--rich-text-json", spec})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected mutual-exclusion error, got nil")
+	}
+}
+
+// TestBlocksList_RichTextJSON asserts that in --json mode the blocks
+// list path emits the rich_text array verbatim (annotations, nested
+// text.content fields) — not just the first plain_text segment.
+func TestBlocksList_RichTextJSON(t *testing.T) {
+	withCmdEnv(t)
+
+	blockType = ""
+	blocksAddRichTextJSON = ""
+	t.Cleanup(func() { blocksAddRichTextJSON = "" })
+
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"--json", "blocks", "list"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(blocks list --json): %v", err)
+	}
+
+	wire := out.String()
+	// The shared mock server emits a to_do block; the --json path
+	// should include the full rich_text shape, not just plain_text.
+	for _, needle := range []string{`"rich_text"`, `"annotations"`, `"plain_text":"buy milk"`} {
+		if !strings.Contains(wire, needle) {
+			t.Errorf("blocks list --json wire missing %q\nfull output: %s", needle, wire)
+		}
 	}
 }
