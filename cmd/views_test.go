@@ -313,11 +313,40 @@ func TestViews_Update_WithConfigJSON(t *testing.T) {
 	}
 }
 
-// TestViews_MissingAPIKey asserts that newViewClient returns
-// ErrMissingAPIKey (wrapped) when NOTION_API_KEY resolves empty rather
-// than silently building a Client that would later 401 on the real #11
-// implementation.
-func TestViews_MissingAPIKey(t *testing.T) {
+// TestViews_Create_ValidationBeforeClientBuild asserts that a bad
+// --type value surfaces the request-validation error and does NOT leak
+// the ErrMissingAPIKey that newViewClient would otherwise return when
+// the env is blank. Ordering: validate request first, then build client.
+func TestViews_Create_ValidationBeforeClientBuild(t *testing.T) {
+	_ = withCmdEnv(t)
+	resetViewsFlags()
+	resetRootCmdArgs()
+
+	// Force the client-build path to fail if it runs, so we can prove
+	// validation ran first by observing the precise validation error
+	// instead of ErrMissingAPIKey.
+	t.Setenv("NOTION_API_KEY", "")
+
+	rootCmd.SetArgs([]string{"views", "create", "dbID", "--name", "n", "--type", "bogus"})
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected validation error, got nil")
+	}
+	if errors.Is(err, utils.ErrMissingAPIKey) {
+		t.Errorf("client build ran before validation: %v", err)
+	}
+	if !strings.Contains(err.Error(), "invalid type") {
+		t.Errorf("error = %q; want substring %q", err.Error(), "invalid type")
+	}
+}
+
+// TestViews_NewViewClient_MissingAPIKey asserts that newViewClient
+// returns ErrMissingAPIKey (wrapped) when NOTION_API_KEY resolves empty
+// rather than silently building a Client that would later 401 on the
+// real #11 implementation.
+func TestViews_NewViewClient_MissingAPIKey(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetViewsFlags()
 	resetRootCmdArgs()

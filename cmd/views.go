@@ -119,16 +119,23 @@ see issue #11 for the tracking bump.`,
 		if err != nil {
 			return err
 		}
-		vc, err := newViewClient()
-		if err != nil {
-			return err
-		}
-		view, err := vc.Create(context.Background(), utils.CreateViewRequest{
+		// Validate the request before paying the env/config cost of
+		// building the client so bad input (e.g. --type bogus) surfaces
+		// as an input error rather than behind an auth/config failure.
+		req := utils.CreateViewRequest{
 			DatabaseID: args[0],
 			Name:       viewsCreateName,
 			Type:       viewsCreateType,
 			Config:     config,
-		})
+		}
+		if err := req.Validate(); err != nil {
+			return err
+		}
+		vc, err := newViewClient()
+		if err != nil {
+			return err
+		}
+		view, err := vc.Create(context.Background(), req)
 		if err != nil {
 			return fmt.Errorf("create view: %w", err)
 		}
@@ -158,14 +165,24 @@ see issue #11 for the tracking bump.`,
 		if err != nil {
 			return err
 		}
+		// Validate the request (and the id) before building the client
+		// so bad input surfaces as an input error rather than behind an
+		// auth/config failure.
+		if args[0] == "" {
+			return fmt.Errorf("update view: id is required")
+		}
+		req := utils.UpdateViewRequest{
+			Name:   viewsUpdateName,
+			Config: config,
+		}
+		if err := req.Validate(); err != nil {
+			return err
+		}
 		vc, err := newViewClient()
 		if err != nil {
 			return err
 		}
-		view, err := vc.Update(context.Background(), args[0], utils.UpdateViewRequest{
-			Name:   viewsUpdateName,
-			Config: config,
-		})
+		view, err := vc.Update(context.Background(), args[0], req)
 		if err != nil {
 			return fmt.Errorf("update view: %w", err)
 		}
