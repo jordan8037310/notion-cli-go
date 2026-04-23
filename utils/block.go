@@ -5,7 +5,9 @@
 package utils
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -56,6 +58,50 @@ var SupportedBlockTypes = map[string]BlockTypeInfo{
 	"callout":            {Icon: "💡", Color: "yellow"},
 	"divider":            {Icon: "—", Color: "white"},
 	"code":               {Icon: "<>", Color: "blue"},
+	// Extended block types (issue #26).
+	"image":        {Icon: "🖼", Color: "magenta"},
+	"file":         {Icon: "📎", Color: "magenta"},
+	"video":        {Icon: "🎬", Color: "magenta"},
+	"embed":        {Icon: "🔗", Color: "blue"},
+	"bookmark":     {Icon: "🔖", Color: "blue"},
+	"equation":     {Icon: "∑", Color: "cyan"},
+	"table":        {Icon: "▦", Color: "white"},
+	"table_row":    {Icon: "│", Color: "white"},
+	"synced_block": {Icon: "⟳", Color: "magenta"},
+	"column_list":  {Icon: "⫴", Color: "white"},
+	"column":       {Icon: "│", Color: "white"},
+}
+
+// AddableBlockTypes lists block types that can be appended via the simple
+// `blocks add` CLI path. Complex types (table, synced_block, column_list,
+// column) require children or references and are intentionally excluded —
+// CLI callers should use a JSON-payload path when that lands.
+var AddableBlockTypes = map[string]bool{
+	"paragraph":          true,
+	"heading_1":          true,
+	"heading_2":          true,
+	"heading_3":          true,
+	"bulleted_list_item": true,
+	"numbered_list_item": true,
+	"to_do":              true,
+	"toggle":             true,
+	"quote":              true,
+	"callout":            true,
+	"divider":            true,
+	"code":               true,
+	"image":              true,
+	"file":               true,
+	"video":              true,
+	"embed":              true,
+	"bookmark":           true,
+	"equation":           true,
+}
+
+// IsAddableBlockType reports whether a block type can be appended via the
+// simple AddBlock path. Types that require children (table, column_list,
+// column) or cross-block references (synced_block) return false.
+func IsAddableBlockType(blockType string) bool {
+	return AddableBlockTypes[blockType]
 }
 
 // GetSupportedBlockTypeNames returns a sorted list of supported block type names.
@@ -134,7 +180,94 @@ type Block struct {
 	Callout          *RichTextBlock `json:"callout,omitempty"`
 	Code             *RichTextBlock `json:"code,omitempty"`
 	Divider          *struct{}      `json:"divider,omitempty"`
+
+	// Extended block types (issue #26).
+	Image       *MediaBlock    `json:"image,omitempty"`
+	File        *MediaBlock    `json:"file,omitempty"`
+	Video       *MediaBlock    `json:"video,omitempty"`
+	Embed       *EmbedBlock    `json:"embed,omitempty"`
+	Bookmark    *BookmarkBlock `json:"bookmark,omitempty"`
+	Equation    *EquationBlock `json:"equation,omitempty"`
+	Table       *TableBlock    `json:"table,omitempty"`
+	TableRow    *TableRowBlock `json:"table_row,omitempty"`
+	SyncedBlock *SyncedBlock   `json:"synced_block,omitempty"`
+	ColumnList  *ColumnList    `json:"column_list,omitempty"`
+	Column      *Column        `json:"column,omitempty"`
 }
+
+// ExternalFile is the external-URL variant of a Notion media reference. Used
+// by image/file/video blocks whose Type is "external".
+type ExternalFile struct {
+	URL string `json:"url"`
+}
+
+// FileUploadRef is the file_upload-id variant of a Notion media reference.
+// Used by image/file/video blocks whose Type is "file_upload".
+type FileUploadRef struct {
+	ID string `json:"id"`
+}
+
+// MediaBlock is the shared shape for image, file, and video blocks. Exactly
+// one of External or FileUpload is set depending on Type ("external" or
+// "file_upload"). Caption is optional.
+type MediaBlock struct {
+	Type       string         `json:"type"`
+	External   *ExternalFile  `json:"external,omitempty"`
+	FileUpload *FileUploadRef `json:"file_upload,omitempty"`
+	Caption    []RichText     `json:"caption,omitempty"`
+}
+
+// EmbedBlock is a generic embed (Miro, Twitter, etc.) addressed by URL.
+type EmbedBlock struct {
+	URL     string     `json:"url"`
+	Caption []RichText `json:"caption,omitempty"`
+}
+
+// BookmarkBlock is a URL bookmark rendered inline on a page.
+type BookmarkBlock struct {
+	URL     string     `json:"url"`
+	Caption []RichText `json:"caption,omitempty"`
+}
+
+// EquationBlock carries a LaTeX-style math expression. The expression is
+// always present; there is no caption.
+type EquationBlock struct {
+	Expression string `json:"expression"`
+}
+
+// TableBlock describes the table envelope; the actual cell content lives in
+// the table's child blocks (each a TableRowBlock).
+type TableBlock struct {
+	TableWidth      int  `json:"table_width"`
+	HasColumnHeader bool `json:"has_column_header"`
+	HasRowHeader    bool `json:"has_row_header"`
+}
+
+// TableRowBlock is a single row of a Notion table. Cells is a slice of
+// cells; each cell is a slice of rich-text runs.
+type TableRowBlock struct {
+	Cells [][]RichText `json:"cells"`
+}
+
+// SyncedFromRef identifies the original block that a synced copy mirrors.
+// When nil on a SyncedBlock, the block is itself the original.
+type SyncedFromRef struct {
+	BlockID string `json:"block_id"`
+}
+
+// SyncedBlock is a shared-content block. If SyncedFrom is nil this is the
+// original; otherwise this block mirrors the referenced block id.
+type SyncedBlock struct {
+	SyncedFrom *SyncedFromRef `json:"synced_from"`
+}
+
+// ColumnList is the container for a multi-column layout. Columns live as
+// child blocks.
+type ColumnList struct{}
+
+// Column is a single column within a ColumnList. Its own children are the
+// blocks rendered in that column.
+type Column struct{}
 
 // BlockList is a single page of block results, as returned by
 // /blocks/{id}/children.
@@ -227,11 +360,13 @@ func FormatAllBlocks(notionAPIKey, pageID string, localTimezone *time.Location, 
 	return defaultBlockClient(notionAPIKey).FormatAllBlocks(defaultCtx(), pageID, localTimezone, filterType)
 }
 
-// AddBlock delegates to BlockClient.AddBlock on a default client.
+// AddBlock delegates to BlockClient.AddBlock on a default client. The
+// variadic opts argument passes media URLs, captions, and other per-type
+// metadata through to the block payload.
 //
 // Deprecated: prefer BlockClient.AddBlock.
-func AddBlock(notionAPIKey, pageID, blockType, text string) error {
-	return defaultBlockClient(notionAPIKey).AddBlock(defaultCtx(), pageID, blockType, text)
+func AddBlock(notionAPIKey, pageID, blockType, text string, opts ...BlockOption) error {
+	return defaultBlockClient(notionAPIKey).AddBlock(defaultCtx(), pageID, blockType, text, opts...)
 }
 
 // DeleteBlock delegates to BlockClient.DeleteBlock on a default client.
@@ -290,8 +425,87 @@ func GetBlockContent(block Block) string {
 		if block.Code != nil && len(block.Code.RichText) > 0 {
 			return block.Code.RichText[0].PlainText
 		}
+	case "image":
+		return mediaBlockContent(block.Image)
+	case "file":
+		return mediaBlockContent(block.File)
+	case "video":
+		return mediaBlockContent(block.Video)
+	case "embed":
+		if block.Embed != nil {
+			return block.Embed.URL
+		}
+	case "bookmark":
+		if block.Bookmark != nil {
+			s := block.Bookmark.URL
+			if len(block.Bookmark.Caption) > 0 {
+				s += " — " + block.Bookmark.Caption[0].PlainText
+			}
+			return s
+		}
+	case "equation":
+		if block.Equation != nil {
+			return "$" + block.Equation.Expression + "$"
+		}
+	case "table":
+		if block.Table != nil {
+			header := "no"
+			if block.Table.HasColumnHeader {
+				header = "yes"
+			}
+			return fmt.Sprintf("table (%d cols, %s header)", block.Table.TableWidth, header)
+		}
+	case "table_row":
+		if block.TableRow != nil {
+			return formatTableRow(block.TableRow)
+		}
+	case "synced_block":
+		if block.SyncedBlock != nil {
+			if block.SyncedBlock.SyncedFrom != nil {
+				return fmt.Sprintf("(synced from %s)", block.SyncedBlock.SyncedFrom.BlockID)
+			}
+			return "(synced original)"
+		}
+	case "column_list", "column":
+		return ""
 	}
 	return "(empty)"
+}
+
+// mediaBlockContent returns a human-readable one-liner for a MediaBlock.
+// External URLs are emitted verbatim; file_upload references render as
+// "[uploaded file <id>]". A nil pointer yields the generic "(empty)" used
+// elsewhere in GetBlockContent.
+func mediaBlockContent(m *MediaBlock) string {
+	if m == nil {
+		return "(empty)"
+	}
+	switch m.Type {
+	case "external":
+		if m.External != nil {
+			return m.External.URL
+		}
+	case "file_upload":
+		if m.FileUpload != nil {
+			return "[uploaded file " + m.FileUpload.ID + "]"
+		}
+	}
+	return "(empty)"
+}
+
+// formatTableRow joins a row's cells with " | ", taking the first plain-text
+// run of each cell. Empty cells render as an empty string, preserving column
+// positions in the output.
+func formatTableRow(row *TableRowBlock) string {
+	parts := make([]string, 0, len(row.Cells))
+	for _, cell := range row.Cells {
+		text := ""
+		if len(cell) > 0 {
+			text = cell[0].PlainText
+		}
+		parts = append(parts, text)
+	}
+	return "[ " + strings.Join(parts, " | ") + " ]"
 }
 
 // GetBlockIcon returns the display icon for a block.
