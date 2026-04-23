@@ -231,10 +231,13 @@ func TestViews_ErrViewsNotSupported_MessageReferences11(t *testing.T) {
 	}
 }
 
-// TestViews_CreateViewRequest_Validate is a direct exercise of the
-// request's Validate method so gap-check sees coverage for the exported
-// method independently of ViewClient.Create.
-func TestViews_CreateViewRequest_Validate(t *testing.T) {
+// TestValidate_CreateViewRequest is a direct exercise of the request's
+// Validate method so gap-check sees coverage for the exported method
+// independently of ViewClient.Create. Named TestValidate_* (vs the
+// TestViews_* prefix used elsewhere in this file) so the gap-check
+// script's regex matches the bare Validate function name — no other
+// Validate methods exist in this module so there is no collision risk.
+func TestValidate_CreateViewRequest(t *testing.T) {
 	ok := CreateViewRequest{DatabaseID: "d", Name: "n", Type: "board"}
 	if err := ok.Validate(); err != nil {
 		t.Errorf("Validate(%+v) = %v, want nil", ok, err)
@@ -245,8 +248,10 @@ func TestViews_CreateViewRequest_Validate(t *testing.T) {
 	}
 }
 
-// TestViews_UpdateViewRequest_Validate exercises the update validator.
-func TestViews_UpdateViewRequest_Validate(t *testing.T) {
+// TestValidate_UpdateViewRequest exercises the update validator.
+// Named TestValidate_* for the same gap-check reason documented on
+// TestValidate_CreateViewRequest above.
+func TestValidate_UpdateViewRequest(t *testing.T) {
 	if err := (UpdateViewRequest{Name: "n"}).Validate(); err != nil {
 		t.Errorf("Validate name-only: %v", err)
 	}
