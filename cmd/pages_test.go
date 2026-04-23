@@ -7,6 +7,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -346,6 +347,31 @@ func TestPagesMoveMissingParent(t *testing.T) {
 	}
 	if got := d.count("PATCH /pages/pageID"); got != 0 {
 		t.Errorf("expected no PATCH when --parent missing, got %d", got)
+	}
+}
+
+// TestPagesMissingAPIKey asserts that when NOTION_API_KEY resolves empty,
+// newPageClient returns ErrMissingAPIKey (wrapped) instead of silently
+// building a Client that would later 401.
+func TestPagesMissingAPIKey(t *testing.T) {
+	_ = withPagesEnv(t)
+	resetPagesFlags()
+	resetRootCmdArgs()
+
+	// Blank out the API key after the usual cmd env has been set up. The
+	// .env file in the test cwd is empty, so os.LookupEnv sees the empty
+	// value we Setenv here, and SetAPIConfig returns "" for apiKey.
+	t.Setenv("NOTION_API_KEY", "")
+
+	pc, err := newPageClient()
+	if err == nil {
+		t.Fatal("expected error when NOTION_API_KEY empty, got nil")
+	}
+	if pc != nil {
+		t.Errorf("expected nil client on error, got %+v", pc)
+	}
+	if !errors.Is(err, utils.ErrMissingAPIKey) {
+		t.Errorf("expected errors.Is ErrMissingAPIKey, got %v", err)
 	}
 }
 
