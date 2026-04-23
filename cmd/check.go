@@ -22,7 +22,11 @@ var checkCmd = &cobra.Command{
 		if err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("check: parse order %q: %w", args[0], err))
 		}
-		notionAPIKey, pageID := utils.SetAPIConfig()
+		notionAPIKey, _ := utils.SetAPIConfig()
+		pageID, err := resolvePageID()
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("check: %w", err))
+		}
 		if err := utils.MarkToDoBlockChecked(notionAPIKey, pageID, order); err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("check: mark task %d complete: %w", order, err))
 		}
