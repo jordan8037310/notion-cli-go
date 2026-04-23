@@ -52,6 +52,25 @@ type FileRef struct {
 // upload style — "single_part" is the v1 default and the only mode the stub
 // will exercise when issue #11 flips the implementation. Filename is the
 // human-readable name shown in Notion after the upload completes.
+//
+// TODO(#11): multi-part uploads. Per the Notion 2026-03-11 docs for
+// POST /v1/file_uploads, switching Mode to "multi_part" requires these
+// additional fields on the request body:
+//
+//   - number_of_parts (int) — total parts the caller will PUT; required and
+//     must be >= 2 when Mode == "multi_part".
+//   - part_number (int) — 1-indexed part identifier supplied on each PUT to
+//     the pre-signed UploadURL (not on the initial POST — kept here for
+//     symmetry so #11's implementer can add it alongside number_of_parts and
+//     decide whether to model a separate PartUploadRequest struct).
+//   - external_url (string, optional) — mutually exclusive with multipart
+//     bytes; used for "upload by URL" mode which is a third variant beyond
+//     single_part / multi_part.
+//
+// The fields are documented rather than declared so a zero-value
+// FileUploadRequest still serializes cleanly on the pinned version. Issue
+// #11 should add them as exported fields with `omitempty` tags so the
+// single-part path's JSON shape stays unchanged.
 type FileUploadRequest struct {
 	Mode        string `json:"mode,omitempty"`
 	Filename    string `json:"filename,omitempty"`
