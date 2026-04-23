@@ -202,8 +202,13 @@ func withCmdEnv(t *testing.T) *httptest.Server {
 
 // resetRootCmdArgs clears any args previously set on rootCmd. cobra retains
 // args across calls, so tests that share rootCmd must reset between runs.
+// The global output flags (--json, --pretty, --output) are also reset here
+// because cobra binds bool/string flags to package-level vars that persist
+// across Execute calls — without the reset one --json test would flip every
+// subsequent test into JSON mode and break assertions on human output.
 func resetRootCmdArgs() {
 	rootCmd.SetArgs(nil)
+	resetGlobalOutputFlags()
 }
 
 // findTopLevelCmd returns the rootCmd child with the given Name, or fails

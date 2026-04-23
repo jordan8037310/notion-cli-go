@@ -92,11 +92,14 @@ var pagesGetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pc, err := newPageClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		page, err := pc.Get(context.Background(), args[0])
 		if err != nil {
-			return fmt.Errorf("get page: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("get page: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), page))
 		}
 		printPage(cmd.OutOrStdout(), page)
 		return nil
@@ -109,18 +112,21 @@ var pagesCreateCmd = &cobra.Command{
 	Short: "Create a new page under --parent",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if pagesCreateParent == "" {
-			return fmt.Errorf("create page: --parent is required")
+			return jsonErrorOr(cmd, fmt.Errorf("create page: --parent is required"))
 		}
 		pc, err := newPageClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		page, err := pc.Create(context.Background(), utils.CreatePageRequest{
 			Parent: utils.PageParent{PageID: pagesCreateParent},
 			Title:  pagesCreateTitle,
 		})
 		if err != nil {
-			return fmt.Errorf("create page: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("create page: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), page))
 		}
 		color.Green("Created page %s", page.ID)
 		printPage(cmd.OutOrStdout(), page)
@@ -141,7 +147,7 @@ var pagesUpdateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pc, err := newPageClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		req := utils.UpdatePageRequest{Title: pagesUpdateTitle}
 		if len(pagesUpdateProps) > 0 {
@@ -149,14 +155,17 @@ var pagesUpdateCmd = &cobra.Command{
 			for _, raw := range pagesUpdateProps {
 				key, val, err := parseProperty(raw)
 				if err != nil {
-					return err
+					return jsonErrorOr(cmd, err)
 				}
 				req.Properties[key] = val
 			}
 		}
 		page, err := pc.Update(context.Background(), args[0], req)
 		if err != nil {
-			return fmt.Errorf("update page: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("update page: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), page))
 		}
 		color.Green("Updated page %s", page.ID)
 		printPage(cmd.OutOrStdout(), page)
@@ -172,10 +181,16 @@ var pagesArchiveCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pc, err := newPageClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		if err := pc.Archive(context.Background(), args[0]); err != nil {
-			return fmt.Errorf("archive page: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("archive page: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitOK(cmd.OutOrStdout(), map[string]interface{}{
+				"action": "archive",
+				"id":     args[0],
+			}))
 		}
 		color.Green("Archived page %s", args[0])
 		return nil
@@ -190,10 +205,16 @@ var pagesUnarchiveCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pc, err := newPageClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		if err := pc.Unarchive(context.Background(), args[0]); err != nil {
-			return fmt.Errorf("unarchive page: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("unarchive page: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitOK(cmd.OutOrStdout(), map[string]interface{}{
+				"action": "unarchive",
+				"id":     args[0],
+			}))
 		}
 		color.Green("Unarchived page %s", args[0])
 		return nil
@@ -209,14 +230,21 @@ var pagesMoveCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if pagesMoveParent == "" {
-			return fmt.Errorf("move page: --parent is required")
+			return jsonErrorOr(cmd, fmt.Errorf("move page: --parent is required"))
 		}
 		pc, err := newPageClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		if err := pc.Move(context.Background(), args[0], pagesMoveParent); err != nil {
-			return fmt.Errorf("move page: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("move page: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitOK(cmd.OutOrStdout(), map[string]interface{}{
+				"action": "move",
+				"id":     args[0],
+				"parent": pagesMoveParent,
+			}))
 		}
 		color.Green("Moved page %s → parent %s", args[0], pagesMoveParent)
 		return nil
@@ -250,15 +278,18 @@ Limitations:
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if pagesDuplicateParent == "" {
-			return fmt.Errorf("duplicate page: --parent is required")
+			return jsonErrorOr(cmd, fmt.Errorf("duplicate page: --parent is required"))
 		}
 		pc, err := newPageClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		page, err := pc.Duplicate(context.Background(), args[0], pagesDuplicateParent)
 		if err != nil {
-			return fmt.Errorf("duplicate page: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("duplicate page: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), page))
 		}
 		color.Green("Duplicated page %s → %s", args[0], page.ID)
 		printPage(cmd.OutOrStdout(), page)

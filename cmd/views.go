@@ -123,11 +123,14 @@ contents are forwarded verbatim as the view's configuration payload.`,
 		}
 		vc, err := newViewClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		view, err := vc.Create(context.Background(), req)
 		if err != nil {
-			return fmt.Errorf("create view: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("create view: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), view))
 		}
 		printView(cmd.OutOrStdout(), view)
 		return nil
@@ -167,11 +170,14 @@ verbatim as the view's configuration payload.`,
 		}
 		vc, err := newViewClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		view, err := vc.Update(context.Background(), args[0], req)
 		if err != nil {
-			return fmt.Errorf("update view: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("update view: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), view))
 		}
 		printView(cmd.OutOrStdout(), view)
 		return nil

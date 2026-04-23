@@ -46,11 +46,14 @@ returns the file id and name only.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fc, err := newFileClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		ref, err := fc.Upload(context.Background(), args[0])
 		if err != nil {
-			return fmt.Errorf("add-image: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("add-image: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), ref))
 		}
 		color.Green("Uploaded image %s (id=%s) — block append deferred", ref.Name, ref.ID)
 		return nil
@@ -72,15 +75,18 @@ returns the file id and name only.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fc, err := newFileClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		ref, err := fc.Upload(context.Background(), args[0])
 		if err != nil {
-			return fmt.Errorf("add-file: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("add-file: %w", err))
 		}
 		name := blocksAddFileName
 		if name == "" {
 			name = ref.Name
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), ref))
 		}
 		color.Green("Uploaded file %s (id=%s) — block append deferred", name, ref.ID)
 		return nil
@@ -100,11 +106,14 @@ command currently returns the file id only.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fc, err := newFileClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		ref, err := fc.Upload(context.Background(), args[1])
 		if err != nil {
-			return fmt.Errorf("set-icon: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("set-icon: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), ref))
 		}
 		color.Green("Uploaded icon for page %s (file id=%s) — icon PATCH deferred", args[0], ref.ID)
 		return nil
@@ -124,11 +133,14 @@ command currently returns the file id only.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fc, err := newFileClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		ref, err := fc.Upload(context.Background(), args[1])
 		if err != nil {
-			return fmt.Errorf("set-cover: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("set-cover: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), ref))
 		}
 		color.Green("Uploaded cover for page %s (file id=%s) — cover PATCH deferred", args[0], ref.ID)
 		return nil

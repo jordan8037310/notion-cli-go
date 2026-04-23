@@ -221,7 +221,7 @@ func TestUsersListDispatch(t *testing.T) {
 	})
 
 	// Reset shared JSON flag so prior tests don't leak state.
-	usersJSON = false
+	resetGlobalOutputFlags()
 
 	resetRootCmdArgs()
 	var out bytes.Buffer
@@ -235,14 +235,22 @@ func TestUsersListDispatch(t *testing.T) {
 		t.Error("users list did not hit /users")
 	}
 
-	// JSON body should decode as a []User.
+	// users list --json emits NDJSON (one User object per line), not a
+	// JSON array. The shape change is deliberate and matches the other
+	// list commands (blocks, comments, teams, databases query, search).
 	body := bytes.TrimSpace(out.Bytes())
 	if len(body) == 0 {
 		t.Fatal("users list --json: empty output")
 	}
-	var decoded []utils.User
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		t.Errorf("users list --json: output is not a []User: %v\n%s", err, body)
+	for i, line := range bytes.Split(body, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		var u utils.User
+		if err := json.Unmarshal(line, &u); err != nil {
+			t.Errorf("users list --json: line %d is not a User: %v\n%s", i, err, line)
+		}
 	}
 }
 
@@ -260,7 +268,7 @@ func TestUsersGetDispatch(t *testing.T) {
 		origHandler.ServeHTTP(w, r)
 	})
 
-	usersJSON = false
+	resetGlobalOutputFlags()
 	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
@@ -283,87 +291,70 @@ func errorHandler(status int) http.Handler {
 }
 
 // TestUsersListDispatch_HTTPErrorExits asserts that a non-2xx response
-// from the Notion users endpoint surfaces through the Run closure,
-// prints an error, and calls osExit(1). Covers cmd/users.go:47-51.
+// from the Notion users endpoint surfaces as a returned error. The
+// command migrated from Run+osExit to RunE, so the error is returned
+// from rootCmd.Execute and cobra's default exit path handles it.
 func TestUsersListDispatch_HTTPErrorExits(t *testing.T) {
 	withUsersEnvHandler(t, errorHandler(http.StatusUnauthorized))
 
-	exited, code := recordOSExit(t)
 	var out bytes.Buffer
 	captureColorOutput(t, &out)
 
-	usersJSON = false
+	resetGlobalOutputFlags()
 	resetRootCmdArgs()
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
 	rootCmd.SetArgs([]string{"users", "list"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute(users list): %v", err)
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("users list: expected error on HTTP 401, got nil")
 	}
-	if !*exited {
-		t.Fatal("users list: osExit not called on HTTP error")
-	}
-	if *code != 1 {
-		t.Errorf("users list: osExit code = %d, want 1", *code)
-	}
-	if !strings.Contains(out.String(), "Error listing users") {
-		t.Errorf("users list: missing error message in output:\n%s", out.String())
+	if !strings.Contains(err.Error(), "users list") {
+		t.Errorf("users list: expected 'users list' in error, got %v", err)
 	}
 }
 
 // TestUsersGetDispatch_HTTPErrorExits covers the 404 path for
-// `users get <id>` (cmd/users.go:82-86).
+// `users get <id>`.
 func TestUsersGetDispatch_HTTPErrorExits(t *testing.T) {
 	withUsersEnvHandler(t, errorHandler(http.StatusNotFound))
 
-	exited, code := recordOSExit(t)
 	var out bytes.Buffer
 	captureColorOutput(t, &out)
 
-	usersJSON = false
+	resetGlobalOutputFlags()
 	resetRootCmdArgs()
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
 	rootCmd.SetArgs([]string{"users", "get", "does-not-exist"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute(users get): %v", err)
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("users get: expected error on HTTP 404, got nil")
 	}
-	if !*exited {
-		t.Fatal("users get: osExit not called on HTTP error")
-	}
-	if *code != 1 {
-		t.Errorf("users get: osExit code = %d, want 1", *code)
-	}
-	if !strings.Contains(out.String(), "Error getting user") {
-		t.Errorf("users get: missing error message in output:\n%s", out.String())
+	if !strings.Contains(err.Error(), "users get") {
+		t.Errorf("users get: expected 'users get' in error, got %v", err)
 	}
 }
 
 // TestUsersWhoamiDispatch_HTTPErrorExits covers the 401 path for
-// `users whoami` (cmd/users.go:109-113).
+// `users whoami`.
 func TestUsersWhoamiDispatch_HTTPErrorExits(t *testing.T) {
 	withUsersEnvHandler(t, errorHandler(http.StatusUnauthorized))
 
-	exited, code := recordOSExit(t)
 	var out bytes.Buffer
 	captureColorOutput(t, &out)
 
-	usersJSON = false
+	resetGlobalOutputFlags()
 	resetRootCmdArgs()
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
 	rootCmd.SetArgs([]string{"users", "whoami"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute(users whoami): %v", err)
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("users whoami: expected error on HTTP 401, got nil")
 	}
-	if !*exited {
-		t.Fatal("users whoami: osExit not called on HTTP error")
-	}
-	if *code != 1 {
-		t.Errorf("users whoami: osExit code = %d, want 1", *code)
-	}
-	if !strings.Contains(out.String(), "Error retrieving self") {
-		t.Errorf("users whoami: missing error message in output:\n%s", out.String())
+	if !strings.Contains(err.Error(), "users whoami") {
+		t.Errorf("users whoami: expected 'users whoami' in error, got %v", err)
 	}
 }
 
@@ -387,7 +378,7 @@ func TestUsersListDispatch_HumanOutput(t *testing.T) {
 		http.Error(w, `{"object":"error","code":"not_found"}`, http.StatusNotFound)
 	}))
 
-	usersJSON = false
+	resetGlobalOutputFlags()
 	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
@@ -420,7 +411,7 @@ func TestUsersListDispatch_HumanOutputEmpty(t *testing.T) {
 	var out bytes.Buffer
 	captureColorOutput(t, &out)
 
-	usersJSON = false
+	resetGlobalOutputFlags()
 	resetRootCmdArgs()
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
@@ -443,7 +434,7 @@ func TestUsersListDispatch_HumanOutputEmpty(t *testing.T) {
 func TestUsersGetDispatch_HumanOutput(t *testing.T) {
 	withUsersEnv(t)
 
-	usersJSON = false
+	resetGlobalOutputFlags()
 	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
@@ -466,7 +457,7 @@ func TestUsersGetDispatch_HumanOutput(t *testing.T) {
 func TestUsersWhoamiDispatch_HumanOutput(t *testing.T) {
 	withUsersEnv(t)
 
-	usersJSON = false
+	resetGlobalOutputFlags()
 	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
@@ -545,7 +536,7 @@ func TestUsersWhoamiDispatch(t *testing.T) {
 		origHandler.ServeHTTP(w, r)
 	})
 
-	usersJSON = false
+	resetGlobalOutputFlags()
 	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)

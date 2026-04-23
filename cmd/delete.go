@@ -7,7 +7,6 @@ package cmd
 import (
 	"fmt"
 	"notioncli/utils"
-	"os"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -18,20 +17,23 @@ var deleteCmd = &cobra.Command{
 	Short: "Remove a task from the task list",
 	Long:  `Completely delete a task, e.g., delete 2 (removes the second task)`,
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		order, err := strconv.Atoi(args[0])
 		if err != nil {
-			fmt.Printf("Could not convert %q to an integer: %v", args[0], err)
-			os.Exit(1)
+			return jsonErrorOr(cmd, fmt.Errorf("delete: parse order %q: %w", args[0], err))
 		}
 		notionAPIKey, pageID := utils.SetAPIConfig()
-		result := utils.DeleteToDoBlock(notionAPIKey, pageID, order)
-		if result != nil {
-			fmt.Printf("Error removing task %d : %v\n", order, result)
-			os.Exit(1)
+		if err := utils.DeleteToDoBlock(notionAPIKey, pageID, order); err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("delete: remove task %d: %w", order, err))
 		}
-		fmt.Printf("Task %d removed.\n", order)
-
+		if globalJSON {
+			return emitOK(cmd.OutOrStdout(), map[string]interface{}{
+				"action": "delete",
+				"order":  order,
+			})
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Task %d removed.\n", order)
+		return nil
 	},
 }
 

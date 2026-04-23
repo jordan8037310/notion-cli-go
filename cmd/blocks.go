@@ -42,12 +42,29 @@ var blocksListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all blocks on the page",
 	Long:  `List all blocks on the Notion page with their type and content.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		notionAPIKey, pageID := utils.SetAPIConfig()
+		// In --json mode skip the timezone lookup (it is only needed to
+		// format timestamps for human output) and emit raw Notion block
+		// objects as NDJSON.
+		if globalJSON {
+			blocks, err := utils.GetAllBlocks(notionAPIKey, pageID, blockType)
+			if err != nil {
+				return jsonErrorOr(cmd, fmt.Errorf("blocks list: %w", err))
+			}
+			out := cmd.OutOrStdout()
+			for _, b := range blocks {
+				if err := emitJSON(out, b); err != nil {
+					return jsonErrorOr(cmd, err)
+				}
+			}
+			return nil
+		}
+
 		localTimezone, err := utils.GetLocalTimeZone()
 		if err != nil {
 			color.Red("Error getting timezone: %v", err)
-			return
+			return nil
 		}
 
 		formatted, typeCounts, err := utils.FormatAllBlocks(
@@ -58,7 +75,7 @@ var blocksListCmd = &cobra.Command{
 		)
 		if err != nil {
 			color.Red("Error: %v", err)
-			return
+			return nil
 		}
 
 		if len(formatted) == 0 {
@@ -67,14 +84,14 @@ var blocksListCmd = &cobra.Command{
 			} else {
 				color.Yellow("No blocks found on this page.")
 			}
-			return
+			return nil
 		}
 
-		fmt.Println()
+		fmt.Fprintln(cmd.OutOrStdout())
 		for _, line := range formatted {
-			fmt.Println(line)
+			fmt.Fprintln(cmd.OutOrStdout(), line)
 		}
-		fmt.Println()
+		fmt.Fprintln(cmd.OutOrStdout())
 
 		// Print summary
 		var summary []string
@@ -85,6 +102,7 @@ var blocksListCmd = &cobra.Command{
 
 		total := len(formatted)
 		color.Cyan("  %d blocks: %s\n", total, strings.Join(summary, ", "))
+		return nil
 	},
 }
 
@@ -105,7 +123,7 @@ Examples:
   notioncli blocks add "" -t divider           # Add divider (no text needed)
   notioncli blocks add "Buy milk" -t to_do`,
 	Args: cobra.MinimumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		text := args[0]
 
 		// Validate block type
@@ -114,17 +132,31 @@ Examples:
 		}
 
 		if !utils.IsValidBlockType(blockType) {
-			color.Red("Error: unsupported block type '%s'", blockType)
-			color.Yellow("Supported types: %s", strings.Join(utils.GetSupportedBlockTypeNames(), ", "))
-			return
+			err := fmt.Errorf("unsupported block type %q (supported: %s)",
+				blockType, strings.Join(utils.GetSupportedBlockTypeNames(), ", "))
+			if globalJSON {
+				return jsonErrorOr(cmd, err)
+			}
+			color.Red("Error: %v", err)
+			return nil
 		}
 
 		notionAPIKey, pageID := utils.SetAPIConfig()
 
-		err := utils.AddBlock(notionAPIKey, pageID, blockType, text)
-		if err != nil {
+		if err := utils.AddBlock(notionAPIKey, pageID, blockType, text); err != nil {
+			if globalJSON {
+				return jsonErrorOr(cmd, fmt.Errorf("blocks add: %w", err))
+			}
 			color.Red("Error adding block: %v", err)
-			return
+			return nil
+		}
+
+		if globalJSON {
+			return emitOK(cmd.OutOrStdout(), map[string]interface{}{
+				"action": "add",
+				"type":   blockType,
+				"text":   text,
+			})
 		}
 
 		icon := utils.SupportedBlockTypes[blockType].Icon
@@ -133,6 +165,7 @@ Examples:
 		} else {
 			color.Green("Added %s %s: %s", icon, blockType, text)
 		}
+		return nil
 	},
 }
 
@@ -146,22 +179,35 @@ Use 'notioncli blocks list' to see block numbers.
 Example:
   notioncli blocks delete 3`,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		order, err := strconv.Atoi(args[0])
 		if err != nil {
+			wrapped := fmt.Errorf("blocks delete: %q is not a valid number: %w", args[0], err)
+			if globalJSON {
+				return jsonErrorOr(cmd, wrapped)
+			}
 			color.Red("Error: '%s' is not a valid number", args[0])
-			return
+			return nil
 		}
 
 		notionAPIKey, pageID := utils.SetAPIConfig()
 
-		err = utils.DeleteBlock(notionAPIKey, pageID, order)
-		if err != nil {
+		if err := utils.DeleteBlock(notionAPIKey, pageID, order); err != nil {
+			if globalJSON {
+				return jsonErrorOr(cmd, fmt.Errorf("blocks delete: %w", err))
+			}
 			color.Red("Error deleting block: %v", err)
-			return
+			return nil
 		}
 
+		if globalJSON {
+			return emitOK(cmd.OutOrStdout(), map[string]interface{}{
+				"action": "delete",
+				"order":  order,
+			})
+		}
 		color.Green("Deleted block %d", order)
+		return nil
 	},
 }
 

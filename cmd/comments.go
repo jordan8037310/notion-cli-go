@@ -6,9 +6,7 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"notioncli/utils"
@@ -20,11 +18,13 @@ import (
 // Flag state for the comments subcommands. Declared at package scope so
 // cobra's StringVar bindings attach to stable addresses, matching the
 // pattern used by blocks.go / list.go.
+//
+// JSON output is driven by the persistent --json flag on rootCmd
+// (globalJSON); comments used to own local --json flags but now share
+// the global one so all commands behave consistently.
 var (
-	commentsListJSON     bool
 	commentsCreateText   string
 	commentsCreateDiscID string
-	commentsCreateJSON   bool
 )
 
 // commentsCmd is the parent command for comment operations.
@@ -46,10 +46,10 @@ var commentsListCmd = &cobra.Command{
 	Short: "List comments attached to a page or block",
 	Long: `List every comment on the given page or block, following pagination.
 
-Output defaults to a human-readable summary. Pass --json to emit the raw
-Notion comment objects as a JSON array on stdout.`,
+Output defaults to a human-readable summary. Pass the global --json flag
+to emit the raw Notion comment objects as NDJSON on stdout.`,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		target := args[0]
 		notionAPIKey, _ := utils.SetAPIConfig()
 		client := utils.NewClient(notionAPIKey, utils.WithBaseURL(utils.GetBaseURL()))
@@ -57,28 +57,33 @@ Notion comment objects as a JSON array on stdout.`,
 
 		comments, err := cc.List(context.Background(), target)
 		if err != nil {
-			color.Red("Error listing comments: %v", err)
-			return
+			return jsonErrorOr(cmd, fmt.Errorf("comments list: %w", err))
 		}
 
-		if commentsListJSON {
-			if err := json.NewEncoder(os.Stdout).Encode(comments); err != nil {
-				color.Red("Error encoding JSON: %v", err)
+		if globalJSON {
+			// NDJSON: one comment object per line. Stable typed shape —
+			// json.Encoder re-marshal is lossless here, no Raw needed.
+			out := cmd.OutOrStdout()
+			for _, c := range comments {
+				if err := emitJSON(out, c); err != nil {
+					return jsonErrorOr(cmd, err)
+				}
 			}
-			return
+			return nil
 		}
 
 		if len(comments) == 0 {
 			color.Yellow("No comments found.")
-			return
+			return nil
 		}
 
-		fmt.Println()
+		fmt.Fprintln(cmd.OutOrStdout())
 		for _, c := range comments {
-			fmt.Println(formatComment(c))
+			fmt.Fprintln(cmd.OutOrStdout(), formatComment(c))
 		}
-		fmt.Println()
+		fmt.Fprintln(cmd.OutOrStdout())
 		color.Cyan("  %d comment(s)", len(comments))
+		return nil
 	},
 }
 
@@ -99,11 +104,10 @@ as parent.block_id regardless of whether it refers to a page or a block.
 The Notion comments API treats page ids as block ids for this endpoint, so
 a single field serves both cases.`,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		target := args[0]
 		if strings.TrimSpace(commentsCreateText) == "" {
-			color.Red("Error: --text is required")
-			return
+			return jsonErrorOr(cmd, fmt.Errorf("comments create: --text is required"))
 		}
 
 		req := utils.CreateCommentRequest{
@@ -126,18 +130,15 @@ a single field serves both cases.`,
 
 		created, err := cc.Create(context.Background(), req)
 		if err != nil {
-			color.Red("Error creating comment: %v", err)
-			return
+			return jsonErrorOr(cmd, fmt.Errorf("comments create: %w", err))
 		}
 
-		if commentsCreateJSON {
-			if err := json.NewEncoder(os.Stdout).Encode(created); err != nil {
-				color.Red("Error encoding JSON: %v", err)
-			}
-			return
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), created))
 		}
 
 		color.Green("Created comment %s", created.ID)
+		return nil
 	},
 }
 
@@ -178,9 +179,6 @@ func init() {
 	commentsCmd.AddCommand(commentsListCmd)
 	commentsCmd.AddCommand(commentsCreateCmd)
 
-	commentsListCmd.Flags().BoolVar(&commentsListJSON, "json", false, "Emit raw Notion objects as JSON")
-
 	commentsCreateCmd.Flags().StringVar(&commentsCreateText, "text", "", "Comment text (required)")
 	commentsCreateCmd.Flags().StringVar(&commentsCreateDiscID, "discussion-id", "", "Reply to an existing discussion thread")
-	commentsCreateCmd.Flags().BoolVar(&commentsCreateJSON, "json", false, "Emit the created comment as JSON")
 }

@@ -6,9 +6,7 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 
 	"notioncli/utils"
 
@@ -16,12 +14,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// usersJSON toggles JSON output on the users subcommands. It is a
-// package-level var so each subcommand can bind its own --json flag.
-var usersJSON bool
-
 // usersCmd is the parent command for user-related operations on the
 // Notion API.
+//
+// JSON output is driven by the persistent --json flag on rootCmd
+// (globalJSON); the users subcommands used to own local --json flags
+// but now share the global one so all commands behave consistently.
 var usersCmd = &cobra.Command{
 	Use:   "users",
 	Short: "Manage Notion workspace users",
@@ -39,33 +37,34 @@ var usersListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List every user in the workspace",
 	Long:  `List every user the current integration can access. Use --json for machine-readable output.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		notionAPIKey, _ := utils.SetAPIConfig()
 		client := utils.NewUserClient(utils.NewClient(notionAPIKey, utils.WithBaseURL(utils.GetBaseURL())))
 
 		users, err := client.List(context.Background())
 		if err != nil {
-			color.Red("Error listing users: %v", err)
-			osExit(1)
-			return
+			return jsonErrorOr(cmd, fmt.Errorf("users list: %w", err))
 		}
 
-		if usersJSON {
-			if err := writeJSON(cmd.OutOrStdout(), users); err != nil {
-				color.Red("Error encoding JSON: %v", err)
-				osExit(1)
-				return
+		if globalJSON {
+			// NDJSON: one user object per line. Stable typed shape.
+			out := cmd.OutOrStdout()
+			for _, u := range users {
+				if err := emitJSON(out, u); err != nil {
+					return jsonErrorOr(cmd, err)
+				}
 			}
-			return
+			return nil
 		}
 
 		if len(users) == 0 {
 			color.Yellow("No users returned.")
-			return
+			return nil
 		}
 		for _, u := range users {
 			fmt.Fprintln(cmd.OutOrStdout(), formatUser(u))
 		}
+		return nil
 	},
 }
 
@@ -74,26 +73,20 @@ var usersGetCmd = &cobra.Command{
 	Use:   "get <id>",
 	Short: "Retrieve a user by id",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		notionAPIKey, _ := utils.SetAPIConfig()
 		client := utils.NewUserClient(utils.NewClient(notionAPIKey, utils.WithBaseURL(utils.GetBaseURL())))
 
 		user, err := client.Get(context.Background(), args[0])
 		if err != nil {
-			color.Red("Error getting user: %v", err)
-			osExit(1)
-			return
+			return jsonErrorOr(cmd, fmt.Errorf("users get: %w", err))
 		}
 
-		if usersJSON {
-			if err := writeJSON(cmd.OutOrStdout(), user); err != nil {
-				color.Red("Error encoding JSON: %v", err)
-				osExit(1)
-				return
-			}
-			return
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), user))
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), formatUser(*user))
+		return nil
 	},
 }
 
@@ -101,26 +94,20 @@ var usersGetCmd = &cobra.Command{
 var usersWhoamiCmd = &cobra.Command{
 	Use:   "whoami",
 	Short: "Show the current integration's bot user",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		notionAPIKey, _ := utils.SetAPIConfig()
 		client := utils.NewUserClient(utils.NewClient(notionAPIKey, utils.WithBaseURL(utils.GetBaseURL())))
 
 		user, err := client.Me(context.Background())
 		if err != nil {
-			color.Red("Error retrieving self: %v", err)
-			osExit(1)
-			return
+			return jsonErrorOr(cmd, fmt.Errorf("users whoami: %w", err))
 		}
 
-		if usersJSON {
-			if err := writeJSON(cmd.OutOrStdout(), user); err != nil {
-				color.Red("Error encoding JSON: %v", err)
-				osExit(1)
-				return
-			}
-			return
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), user))
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), formatUser(*user))
+		return nil
 	},
 }
 
@@ -145,21 +132,9 @@ func formatUser(u utils.User) string {
 	return fmt.Sprintf("[%s] %s%s  id=%s", kind, name, detail, u.ID)
 }
 
-// writeJSON encodes v as indented JSON to w. Broken out so the users
-// subcommands share a single encoder configuration.
-func writeJSON(w io.Writer, v interface{}) error {
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
-}
-
 func init() {
 	rootCmd.AddCommand(usersCmd)
 	usersCmd.AddCommand(usersListCmd)
 	usersCmd.AddCommand(usersGetCmd)
 	usersCmd.AddCommand(usersWhoamiCmd)
-
-	usersListCmd.Flags().BoolVar(&usersJSON, "json", false, "Emit JSON instead of human-readable output")
-	usersGetCmd.Flags().BoolVar(&usersJSON, "json", false, "Emit JSON instead of human-readable output")
-	usersWhoamiCmd.Flags().BoolVar(&usersJSON, "json", false, "Emit JSON instead of human-readable output")
 }
