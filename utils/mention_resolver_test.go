@@ -100,12 +100,12 @@ func (m *resolverMockServer) client() *Client {
 
 // -------- NoPageResolver --------
 
-// TestMentionResolver_NoResolver locks the default-path contract: a
+// TestResolvePageTitle_NoResolver locks the default-path contract: a
 // NoPageResolver always errors, so RenderRichTextWithResolver must emit
 // the legacy "[page:<id>]" marker unchanged. Guards against any future
 // refactor that accidentally treats a nil/Noop resolver as permission
 // to hit the network or drop the marker.
-func TestMentionResolver_NoResolver(t *testing.T) {
+func TestResolvePageTitle_NoResolver(t *testing.T) {
 	withNoColor(t)
 
 	got, err := NoPageResolver{}.ResolvePageTitle(context.Background(), "p-1")
@@ -123,12 +123,12 @@ func TestMentionResolver_NoResolver(t *testing.T) {
 	}
 }
 
-// TestMentionResolver_NilResolver verifies that passing a nil
+// TestResolvePageTitle_NilResolver verifies that passing a nil
 // PageTitleResolver into RenderRichTextWithResolver is treated the
 // same as NoPageResolver — the mention falls through to "[page:<id>]".
 // Important because cmd call sites may pass nil when no resolver is
 // wired up.
-func TestMentionResolver_NilResolver(t *testing.T) {
+func TestResolvePageTitle_NilResolver(t *testing.T) {
 	withNoColor(t)
 
 	rt := []RichText{{Type: "mention", Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-2"}}}}
@@ -138,11 +138,11 @@ func TestMentionResolver_NilResolver(t *testing.T) {
 	}
 }
 
-// TestMentionResolver_Caching_HitTwiceOneAPICall exercises the core
+// TestResolvePageTitle_CachingHitTwiceOneAPICall exercises the core
 // caching promise of CachingPageResolver: a page mentioned N times in
 // a single render pass triggers exactly one PageClient.Get call.
 // Without the cache this is the N+1 problem the issue calls out.
-func TestMentionResolver_Caching_HitTwiceOneAPICall(t *testing.T) {
+func TestResolvePageTitle_CachingHitTwiceOneAPICall(t *testing.T) {
 	m := newResolverMockServer(t)
 	m.addPage("p-cache", titleProps("Project Plan"))
 
@@ -172,11 +172,11 @@ func TestMentionResolver_Caching_HitTwiceOneAPICall(t *testing.T) {
 	}
 }
 
-// TestMentionResolver_ErrorCaching covers the negative-cache branch: a
+// TestResolvePageTitle_ErrorCaching covers the negative-cache branch: a
 // page that 404s on first lookup must not be re-queried on subsequent
 // references. Guards against a single broken mention hammering the API
 // when the same page id appears many times in one block.
-func TestMentionResolver_ErrorCaching(t *testing.T) {
+func TestResolvePageTitle_ErrorCaching(t *testing.T) {
 	m := newResolverMockServer(t)
 	m.addMissing("p-missing")
 
@@ -195,11 +195,11 @@ func TestMentionResolver_ErrorCaching(t *testing.T) {
 	}
 }
 
-// TestMentionResolver_EmptyTitle covers the "page exists but has no
+// TestResolvePageTitle_EmptyTitle covers the "page exists but has no
 // title property" path. extractPageTitle returns "" in that case, and
 // ResolvePageTitle surfaces ("", nil) so RenderRichTextWithResolver
 // can fall back to "[page:<id>]" rather than emit "[]".
-func TestMentionResolver_EmptyTitle(t *testing.T) {
+func TestResolvePageTitle_EmptyTitle(t *testing.T) {
 	withNoColor(t)
 
 	m := newResolverMockServer(t)
@@ -228,11 +228,11 @@ func TestMentionResolver_EmptyTitle(t *testing.T) {
 	}
 }
 
-// TestMentionResolver_MultiSegmentTitle locks the title-extraction
+// TestResolvePageTitle_MultiSegmentTitle locks the title-extraction
 // behavior for pages whose title is split across multiple rich-text
 // runs — the extractor must concatenate every plain_text segment in
 // order rather than returning only the first one.
-func TestMentionResolver_MultiSegmentTitle(t *testing.T) {
+func TestResolvePageTitle_MultiSegmentTitle(t *testing.T) {
 	m := newResolverMockServer(t)
 	m.addPage("p-multi", titleProps("Hello ", "World"))
 
@@ -248,11 +248,11 @@ func TestMentionResolver_MultiSegmentTitle(t *testing.T) {
 	}
 }
 
-// TestMentionResolver_EmptyPageID covers a programmer-error input:
+// TestResolvePageTitle_EmptyPageID covers a programmer-error input:
 // ResolvePageTitle called with an empty id must error before hitting
 // the network so the caller's loop doesn't trigger a speculative call
 // with a malformed URL.
-func TestMentionResolver_EmptyPageID(t *testing.T) {
+func TestResolvePageTitle_EmptyPageID(t *testing.T) {
 	m := newResolverMockServer(t)
 	pc := NewPageClient(m.client())
 	r := NewCachingPageResolver(pc)
@@ -265,11 +265,11 @@ func TestMentionResolver_EmptyPageID(t *testing.T) {
 	}
 }
 
-// TestMentionResolver_NilClient covers constructing a resolver without
+// TestResolvePageTitle_NilClient covers constructing a resolver without
 // a real PageClient (e.g. a test harness or a CLI path that could not
 // build one). Every lookup must error so RenderRichTextWithResolver
 // falls back to "[page:<id>]" instead of panicking on a nil deref.
-func TestMentionResolver_NilClient(t *testing.T) {
+func TestResolvePageTitle_NilClient(t *testing.T) {
 	r := NewCachingPageResolver(nil)
 	if _, err := r.ResolvePageTitle(context.Background(), "p-any"); err == nil {
 		t.Fatal("expected error from resolver with nil client")
@@ -283,7 +283,9 @@ func TestMentionResolver_NilClient(t *testing.T) {
 // TestNewCachingPageResolver verifies the constructor wires up non-nil
 // maps so the first lookup's cache probe doesn't nil-deref. Kept as a
 // dedicated test to satisfy the gap-gate (exported constructor → needs
-// a Test<Name>) and to lock the zero-state contract.
+// a Test<Name>) and to lock the zero-state contract. The deeper
+// caching / negative-cache / empty-title paths live in
+// TestResolvePageTitle_* above.
 func TestNewCachingPageResolver(t *testing.T) {
 	r := NewCachingPageResolver(nil)
 	if r == nil {
@@ -295,30 +297,4 @@ func TestNewCachingPageResolver(t *testing.T) {
 	if r.errs == nil {
 		t.Error("errs map is nil; first Set will panic")
 	}
-}
-
-// TestResolvePageTitle is the gap-gate-satisfying umbrella for the
-// exported ResolvePageTitle method on both NoPageResolver and
-// CachingPageResolver. The deeper caching / negative-cache / empty-title
-// paths live in TestMentionResolver_* above.
-func TestResolvePageTitle(t *testing.T) {
-	t.Run("no_resolver_errors", func(t *testing.T) {
-		_, err := NoPageResolver{}.ResolvePageTitle(context.Background(), "p-x")
-		if err == nil {
-			t.Fatal("NoPageResolver must always error")
-		}
-	})
-	t.Run("caching_resolver_returns_title", func(t *testing.T) {
-		m := newResolverMockServer(t)
-		m.addPage("p-sanity", titleProps("Sanity"))
-		r := NewCachingPageResolver(NewPageClient(m.client()))
-
-		title, err := r.ResolvePageTitle(context.Background(), "p-sanity")
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if title != "Sanity" {
-			t.Errorf("title=%q want Sanity", title)
-		}
-	})
 }
