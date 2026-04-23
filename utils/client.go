@@ -14,9 +14,13 @@ import (
 )
 
 // NotionAPIVersion is the pinned Notion API version used for every request.
-// Bumping it is an explicit, tracked change (see issue #11) — do not update
-// without a linked issue.
-const NotionAPIVersion = "2022-06-28"
+// The 2026-03-11 release introduced the endpoints this CLI now consumes:
+//   - GET /v1/teams (workspace team listing)
+//   - POST /v1/data_sources/{id}/views (view create/update for database views)
+//   - POST /v1/file_uploads (two-step file upload flow)
+// Older responses continue to decode through existing structs; the pre-existing
+// block, page, database, comment, search, and users endpoints are unchanged.
+const NotionAPIVersion = "2026-03-11"
 
 // DefaultBaseURL is the default Notion API base URL. It is exposed so tests
 // and integrators can reason about the default target without reaching into
