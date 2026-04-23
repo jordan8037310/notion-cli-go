@@ -124,6 +124,14 @@ func cmdMockServer(t *testing.T) *httptest.Server {
 				todo("blockID", "buy milk", false),
 			}})
 
+		// GET children: aliased page id used by the multi-page --page
+		// integration tests. The page id below matches the uuid we
+		// register under the "work" alias in alias-aware test fixtures.
+		case r.Method == http.MethodGet && r.URL.Path == "/blocks/11111111111111111111111111111111/children":
+			writeJSON(w, utils.BlockList{Results: []utils.Block{
+				todo("aliasBlock", "aliased task", false),
+			}})
+
 		// GET children: mixed page for blocks subcommand tests.
 		case r.Method == http.MethodGet && r.URL.Path == "/blocks/mixedPage/children":
 			writeJSON(w, utils.BlockList{Results: []utils.Block{
