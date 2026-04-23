@@ -6,6 +6,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 
 	"notioncli/utils"
 
@@ -13,18 +14,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// teamsCmd is the parent command for team-related operations. The teams
-// endpoint is not available on the pinned Notion-Version (2022-06-28);
-// see issue #11 for the version bump that will enable a real listing.
+// teamsCmd is the parent command for team-related operations. Requires
+// Notion-Version 2026-03-11 or newer (the /v1/teams endpoint was
+// introduced in that release).
 var teamsCmd = &cobra.Command{
 	Use:   "teams",
-	Short: "Manage Notion workspace teams (pending API version bump)",
-	Long: `The teams command will work once the Notion-Version pinned by
-this CLI is bumped (tracked in issue #11). Today every subcommand returns
-a clear "not supported" error so callers can branch on it.`,
+	Short: "Manage Notion workspace teams",
+	Long: `The teams command lists workspace teams visible to the integration.
+Requires Notion-Version 2026-03-11 or newer.`,
 }
 
-// teamsListCmd surfaces utils.ErrTeamsNotSupported to the user.
+// teamsListCmd lists every team visible to the integration, following
+// pagination under the hood.
 var teamsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List every team in the workspace",
@@ -32,13 +33,19 @@ var teamsListCmd = &cobra.Command{
 		notionAPIKey, _ := utils.SetAPIConfig()
 		client := utils.NewTeamClient(utils.NewClient(notionAPIKey, utils.WithBaseURL(utils.GetBaseURL())))
 
-		// client.List currently always returns (nil, ErrTeamsNotSupported)
-		// on this branch; the discard of the first return is intentional
-		// and becomes load-bearing once issue #11 lands the real impl.
-		if _, err := client.List(context.Background()); err != nil {
+		teams, err := client.List(context.Background())
+		if err != nil {
 			color.Red("Error: %v", err)
 			osExit(1)
 			return
+		}
+
+		if len(teams) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "No teams found.")
+			return
+		}
+		for _, team := range teams {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", team.ID, team.Name)
 		}
 	},
 }
