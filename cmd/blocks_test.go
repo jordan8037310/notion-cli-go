@@ -14,16 +14,7 @@ import (
 // child matching name, or fails the test.
 func findBlocksSubcommand(t *testing.T, name string) *cobra.Command {
 	t.Helper()
-	var blocksC *cobra.Command
-	for _, c := range rootCmd.Commands() {
-		if c.Name() == "blocks" {
-			blocksC = c
-			break
-		}
-	}
-	if blocksC == nil {
-		t.Fatal("blocks command not registered on rootCmd")
-	}
+	blocksC := findTopLevelCmd(t, "blocks")
 	for _, c := range blocksC.Commands() {
 		if c.Name() == name {
 			return c
@@ -36,16 +27,7 @@ func findBlocksSubcommand(t *testing.T, name string) *cobra.Command {
 // TestBlocksCmdRegistered verifies `blocks` is a top-level command and
 // owns its three subcommands (list, add, delete).
 func TestBlocksCmdRegistered(t *testing.T) {
-	var blocksC *cobra.Command
-	for _, c := range rootCmd.Commands() {
-		if c.Name() == "blocks" {
-			blocksC = c
-			break
-		}
-	}
-	if blocksC == nil {
-		t.Fatal("blocks command not registered on rootCmd")
-	}
+	blocksC := findTopLevelCmd(t, "blocks")
 
 	want := map[string]bool{"list": false, "add": false, "delete": false}
 	for _, c := range blocksC.Commands() {
@@ -139,7 +121,7 @@ func TestBlocksListDispatch(t *testing.T) {
 	// is a package-level variable; a stale "to_do" here would narrow results.
 	blockType = ""
 
-	resetRootCmdArgs(t)
+	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
@@ -170,7 +152,7 @@ func TestBlocksAddDispatch(t *testing.T) {
 	// Reset block type so the add command falls back to paragraph.
 	blockType = ""
 
-	resetRootCmdArgs(t)
+	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
@@ -203,7 +185,7 @@ func TestBlocksDeleteDispatch(t *testing.T) {
 
 	blockType = ""
 
-	resetRootCmdArgs(t)
+	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)

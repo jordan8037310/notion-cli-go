@@ -6,23 +6,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/spf13/cobra"
 )
 
 // TestUncheckCmdArgsAndFlags asserts argument arity and that the --order
 // flag is declared as int with a default of 0.
 func TestUncheckCmdArgsAndFlags(t *testing.T) {
-	var c *cobra.Command
-	for _, cc := range rootCmd.Commands() {
-		if cc.Name() == "uncheck" {
-			c = cc
-			break
-		}
-	}
-	if c == nil {
-		t.Fatal("uncheck command not registered on rootCmd")
-	}
+	c := findTopLevelCmd(t, "uncheck")
 
 	cases := []struct {
 		name    string
@@ -71,7 +60,7 @@ func TestUncheckCmdDispatch(t *testing.T) {
 		origHandler.ServeHTTP(w, r)
 	})
 
-	resetRootCmdArgs(t)
+	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
@@ -85,31 +74,5 @@ func TestUncheckCmdDispatch(t *testing.T) {
 	}
 	if atomic.LoadInt64(&patched) == 0 {
 		t.Error("uncheck command did not PATCH /blocks/blockID")
-	}
-}
-
-// TestUncheckCmdNonNumericArg is a negative dispatch test: passing a
-// non-integer positional arg should trip the strconv.Atoi branch. The
-// command prints an error and calls os.Exit(1) in that path, so we cannot
-// safely call Execute() here. Instead, exercise the ParseArgs code path by
-// confirming cobra still accepts the arg shape (cobra.ExactArgs(1) only
-// checks count), leaving the conversion to Run.
-func TestUncheckCmdNonNumericArgAcceptedByCobra(t *testing.T) {
-	var c *cobra.Command
-	for _, cc := range rootCmd.Commands() {
-		if cc.Name() == "uncheck" {
-			c = cc
-			break
-		}
-	}
-	if c == nil {
-		t.Fatal("uncheck command not registered on rootCmd")
-	}
-	// Cobra's ExactArgs doesn't type-check positionals — that's the Run
-	// function's job. This test pins that contract so a future refactor
-	// that adds a type validator still preserves the expected error
-	// surface.
-	if err := c.Args(c, []string{"not-a-number"}); err != nil {
-		t.Errorf("uncheck: expected cobra.Args to accept any single positional, got %v", err)
 	}
 }

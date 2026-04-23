@@ -6,8 +6,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/spf13/cobra"
 )
 
 // TestDeleteCmdArgsAndFlags asserts ExactArgs(1) and the --order flag
@@ -15,16 +13,7 @@ import (
 // blocks delete subcommand is tested in blocks_test.go).
 func TestDeleteCmdArgsAndFlags(t *testing.T) {
 	// Walk top-level rootCmd children only — don't descend into blocksCmd.
-	var c *cobra.Command
-	for _, cc := range rootCmd.Commands() {
-		if cc.Name() == "delete" {
-			c = cc
-			break
-		}
-	}
-	if c == nil {
-		t.Fatal("delete command not registered on rootCmd")
-	}
+	c := findTopLevelCmd(t, "delete")
 
 	cases := []struct {
 		name    string
@@ -72,7 +61,7 @@ func TestDeleteCmdDispatch(t *testing.T) {
 		origHandler.ServeHTTP(w, r)
 	})
 
-	resetRootCmdArgs(t)
+	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)

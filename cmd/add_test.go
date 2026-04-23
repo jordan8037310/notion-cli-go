@@ -6,8 +6,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/spf13/cobra"
 )
 
 // TestAddCmdArgsValidation exercises the cobra-level argument validation
@@ -15,16 +13,7 @@ import (
 // argument — zero args and two args must fail; one arg must pass.
 func TestAddCmdArgsValidation(t *testing.T) {
 	// Locate the actual command instance via rootCmd so we match what users hit.
-	var addC *cobra.Command
-	for _, c := range rootCmd.Commands() {
-		if c.Name() == "add" {
-			addC = c
-			break
-		}
-	}
-	if addC == nil {
-		t.Fatal("add command not registered on rootCmd")
-	}
+	addC := findTopLevelCmd(t, "add")
 
 	tests := []struct {
 		name    string
@@ -60,7 +49,7 @@ func TestAddCmdDispatch(t *testing.T) {
 		origHandler.ServeHTTP(w, r)
 	})
 
-	resetRootCmdArgs(t)
+	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
@@ -69,7 +58,9 @@ func TestAddCmdDispatch(t *testing.T) {
 		t.Fatalf("rootCmd.Execute(add): %v", err)
 	}
 
-	if atomic.LoadInt64(&patched) == 0 {
-		t.Error("add command did not PATCH /blocks/pageID/children")
+	// AddNewToDoItem should issue exactly one PATCH — a count > 1 would
+	// indicate an accidental retry regression.
+	if got := atomic.LoadInt64(&patched); got != 1 {
+		t.Errorf("add command PATCH count = %d, want 1", got)
 	}
 }
