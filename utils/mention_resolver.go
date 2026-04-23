@@ -24,8 +24,11 @@ type PageTitleResolver interface {
 type NoPageResolver struct{}
 
 // ResolvePageTitle always returns an error so RenderRichTextWithResolver
-// falls back to the default "[page:<id>]" marker.
+// falls back to the default "[page:<id>]" marker. ctx and pageID are
+// intentionally unused — this resolver short-circuits before any work.
 func (NoPageResolver) ResolvePageTitle(ctx context.Context, pageID string) (string, error) {
+	_ = ctx
+	_ = pageID
 	return "", fmt.Errorf("no page title resolver configured")
 }
 
