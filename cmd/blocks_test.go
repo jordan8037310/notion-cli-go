@@ -170,7 +170,8 @@ func TestBlocksAddDispatch(t *testing.T) {
 
 // TestBlocksAdd_ExtendedFlags verifies the extended --url / --caption /
 // --file-upload-id / --language flags are registered and that --url defaults
-// to empty (the positional text remains the default URL source).
+// to empty (the positional text remains the default URL source). --language
+// defaults to "plain text" so Cobra's help output matches runtime behaviour.
 func TestBlocksAdd_ExtendedFlags(t *testing.T) {
 	add := findBlocksSubcommand(t, "add")
 
@@ -181,7 +182,7 @@ func TestBlocksAdd_ExtendedFlags(t *testing.T) {
 		{"url", ""},
 		{"caption", ""},
 		{"file-upload-id", ""},
-		{"language", ""},
+		{"language", "plain text"},
 	} {
 		t.Run(tc.flag, func(t *testing.T) {
 			f := add.Flag(tc.flag)
@@ -201,13 +202,14 @@ func TestBlocksAdd_ExtendedFlags(t *testing.T) {
 // resetBlocksAddFlags clears every package-level flag variable the add
 // command binds to. Cobra keeps these alive across rootCmd.Execute calls, so
 // tests that flip --url or --file-upload-id would leak those settings into
-// later tests without this reset.
+// later tests without this reset. blockLanguage resets to the Cobra default
+// ("plain text") so code-block tests see the same value the CLI user sees.
 func resetBlocksAddFlags() {
 	blockType = ""
 	blockURL = ""
 	blockCaption = ""
 	blockFileID = ""
-	blockLanguage = ""
+	blockLanguage = "plain text"
 }
 
 // TestBlocksAddDispatch_Image runs `blocks add https://... -t image` and

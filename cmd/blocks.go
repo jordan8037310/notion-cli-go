@@ -300,5 +300,5 @@ func init() {
 	blocksAddCmd.Flags().StringVar(&blockURL, "url", "", "URL for image/file/video/embed/bookmark blocks (overrides positional text)")
 	blocksAddCmd.Flags().StringVar(&blockCaption, "caption", "", "Optional caption for image/file/video/embed/bookmark blocks")
 	blocksAddCmd.Flags().StringVar(&blockFileID, "file-upload-id", "", "Notion file_upload id for image/file/video blocks (see files upload)")
-	blocksAddCmd.Flags().StringVar(&blockLanguage, "language", "", "Language for code blocks (default \"plain text\")")
+	blocksAddCmd.Flags().StringVar(&blockLanguage, "language", "plain text", "Language for code blocks")
 }
