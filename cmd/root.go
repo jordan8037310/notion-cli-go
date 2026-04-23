@@ -27,6 +27,10 @@ var rootCmd = &cobra.Command{
 		  help (get some help)`,
 }
 
+// osExit is indirected through a package-level var so tests can swap in a
+// no-op and assert on the exit decision without terminating the test binary.
+var osExit = os.Exit
+
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
@@ -34,7 +38,7 @@ func Execute() {
 	fmt.Println(boldBlue("----=[ NotionCLI ]=----"))
 	err := rootCmd.Execute()
 	if err != nil {
-		os.Exit(1)
+		osExit(1)
 	}
 }
 
