@@ -10,9 +10,10 @@ import (
 	"strconv"
 	"strings"
 
+	"notioncli/utils"
+
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
-	"notioncli/utils"
 )
 
 var blockType string
