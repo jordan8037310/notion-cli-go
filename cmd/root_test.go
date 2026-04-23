@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -60,6 +61,39 @@ func TestExecuteHappyPath(t *testing.T) {
 
 	if exited {
 		t.Errorf("Execute() unexpectedly called osExit(%d) on happy path", code)
+	}
+}
+
+// TestShouldSuppressBanner_JSONForms exercises the banner-suppression
+// rule: suppress when --json or --output=json (any space/equals form),
+// do NOT suppress for --output=text / --output text / plain invocations.
+// This locks the fix for the PR #28 review: bare --output with a non-
+// json value was incorrectly swallowing the banner.
+func TestShouldSuppressBanner_JSONForms(t *testing.T) {
+	orig := os.Args
+	t.Cleanup(func() { os.Args = orig })
+
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"plain", []string{"notioncli", "list"}, false},
+		{"json_flag", []string{"notioncli", "list", "--json"}, true},
+		{"output_equals_json", []string{"notioncli", "list", "--output=json"}, true},
+		{"output_space_json", []string{"notioncli", "list", "--output", "json"}, true},
+		{"output_equals_text", []string{"notioncli", "list", "--output=text"}, false},
+		{"output_space_text", []string{"notioncli", "list", "--output", "text"}, false},
+		{"output_trailing_no_value", []string{"notioncli", "list", "--output"}, false},
+		{"help", []string{"notioncli", "--help"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			if got := shouldSuppressBanner(); got != tc.want {
+				t.Errorf("shouldSuppressBanner() = %v, want %v (args=%v)", got, tc.want, tc.args)
+			}
+		})
 	}
 }
 

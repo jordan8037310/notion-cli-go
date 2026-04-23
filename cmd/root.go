@@ -67,15 +67,24 @@ func Execute() {
 // cobra parses the flags) so the very first byte of stdout is not a
 // terminal escape. cobra's Execute() is what wires --json into the
 // globalJSON var, and by then the banner has already been written.
+//
+// We suppress only when JSON is definitely on. That means:
+//   - bare --json
+//   - --output=json (single-token form)
+//   - --output json (space-separated form) — we peek the next arg
+//
+// --output=text (or --output text) must NOT suppress the banner so human
+// invocations keep the banner they always had.
 func shouldSuppressBanner() bool {
-	for _, a := range os.Args[1:] {
+	args := os.Args[1:]
+	for i, a := range args {
 		switch a {
 		case "--json", "--output=json":
 			return true
 		case "--output":
-			// next arg is the value — we can't safely index past here
-			// without repeating cobra's parser, so suppress on sight.
-			return true
+			if i+1 < len(args) && args[i+1] == "json" {
+				return true
+			}
 		}
 	}
 	return false
