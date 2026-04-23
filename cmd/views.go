@@ -86,8 +86,9 @@ func readConfigJSON(path string) (json.RawMessage, error) {
 // viewsCreateCmd creates a new view on the given database. The command
 // is wired with RunE so the returned error drives cobra's exit code —
 // the shell sees a non-zero status without any call to os.Exit from
-// this file. Today the final error is always ErrViewsNotSupported
-// (except for validation / config-file errors which short-circuit it).
+// this file. Errors originate from ViewClient.Create (validation,
+// config-file parsing, or the underlying POST /v1/data_sources/{id}/views
+// call) and are wrapped before returning.
 var viewsCreateCmd = &cobra.Command{
 	Use:   "create <database-id>",
 	Short: "Create a new view on a database",

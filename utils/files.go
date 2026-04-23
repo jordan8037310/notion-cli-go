@@ -113,7 +113,7 @@ func validateUploadPath(path string) error {
 
 // Upload runs the two-step Notion file-upload flow:
 //  1. POST /v1/file_uploads (mode=single_part, filename) → FileUploadResponse
-//  2. PUT FileUploadResponse.UploadURL with multipart/form-data containing
+//  2. POST FileUploadResponse.UploadURL with multipart/form-data containing
 //     the file bytes under the "file" field
 //
 // Returns a FileRef suitable for use as a block/page icon/cover reference.
