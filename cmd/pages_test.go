@@ -268,15 +268,19 @@ func TestPagesCreateDispatch(t *testing.T) {
 	}
 }
 
-// TestPagesCreateMissingParent confirms --parent is required.
+// TestPagesCreateMissingParent confirms --parent is required and that the
+// missing-flag case propagates a non-nil error out of RunE so cobra sets a
+// non-zero shell exit code.
 func TestPagesCreateMissingParent(t *testing.T) {
 	d := withPagesEnv(t)
 	resetPagesFlags()
 	resetRootCmdArgs()
 
 	rootCmd.SetArgs([]string{"pages", "create", "--title", "x"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected error when --parent missing, got nil")
 	}
 	// No POST should have happened.
 	if got := d.count("POST /pages"); got != 0 {
@@ -335,15 +339,18 @@ func TestPagesMoveDispatch(t *testing.T) {
 	}
 }
 
-// TestPagesMoveMissingParent confirms --parent is required for move.
+// TestPagesMoveMissingParent confirms --parent is required for move and
+// that RunE returns a non-nil error for the missing-flag case.
 func TestPagesMoveMissingParent(t *testing.T) {
 	d := withPagesEnv(t)
 	resetPagesFlags()
 	resetRootCmdArgs()
 
 	rootCmd.SetArgs([]string{"pages", "move", "pageID"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected error when --parent missing, got nil")
 	}
 	if got := d.count("PATCH /pages/pageID"); got != 0 {
 		t.Errorf("expected no PATCH when --parent missing, got %d", got)
@@ -397,15 +404,18 @@ func TestPagesDuplicateDispatch(t *testing.T) {
 	}
 }
 
-// TestPagesDuplicateMissingParent confirms --parent is required.
+// TestPagesDuplicateMissingParent confirms --parent is required and that
+// RunE surfaces the missing-flag error so shell callers see a non-zero exit.
 func TestPagesDuplicateMissingParent(t *testing.T) {
 	d := withPagesEnv(t)
 	resetPagesFlags()
 	resetRootCmdArgs()
 
 	rootCmd.SetArgs([]string{"pages", "duplicate", "srcID"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected error when --parent missing, got nil")
 	}
 	if got := d.count("POST /pages"); got != 0 {
 		t.Errorf("expected no POST /pages when --parent missing, got %d", got)
