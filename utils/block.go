@@ -416,11 +416,15 @@ func AddBlock(notionAPIKey, pageID, blockType, text string, opts ...BlockOption)
 }
 
 // AddRichTextBlock delegates to BlockClient.AddRichTextBlock on a default
-// client. This is the write path that preserves annotations, mentions,
-// and multi-segment rich-text arrays — the cmd layer uses it for
-// --rich-text-json.
+// client. Peer to AddBlock: same (apiKey, pageID, blockType, payload)
+// parameter ordering; the payload is a []RichText slice so annotations,
+// mentions, inline equations, and multi-segment runs round-trip — the cmd
+// layer uses it for --rich-text-json.
 //
-// Deprecated: prefer BlockClient.AddRichTextBlock.
+// Deprecated: introduced deprecated for symmetry with the other package-
+// level delegates in this file (AddBlock, GetBlocks, ...). All of them are
+// on a migration path toward the *BlockClient method form; prefer
+// BlockClient.AddRichTextBlock in new code.
 func AddRichTextBlock(notionAPIKey, pageID, blockType string, rt []RichText) error {
 	return defaultBlockClient(notionAPIKey).AddRichTextBlock(defaultCtx(), pageID, blockType, rt)
 }
@@ -483,28 +487,43 @@ func blockRichText(block Block) []RichText {
 		if block.Code != nil {
 			return block.Code.RichText
 		}
+	}
+	return nil
+}
+
+// extendedBlockContent returns the human-readable one-liner for block types
+// that are not rich-text-bearing (image/file/video/embed/bookmark/equation/
+// table/table_row/synced_block/column_list/column). Returns the empty string
+// "" to signal "not one of these types; use blockRichText instead" — callers
+// must distinguish this from the genuine empty-string cases (column_list,
+// column) by checking block.Type first.
+func extendedBlockContent(block Block) (string, bool) {
+	switch block.Type {
 	case "image":
-		return mediaBlockContent(block.Image)
+		return mediaBlockContent(block.Image), true
 	case "file":
-		return mediaBlockContent(block.File)
+		return mediaBlockContent(block.File), true
 	case "video":
-		return mediaBlockContent(block.Video)
+		return mediaBlockContent(block.Video), true
 	case "embed":
 		if block.Embed != nil {
-			return block.Embed.URL
+			return block.Embed.URL, true
 		}
+		return "(empty)", true
 	case "bookmark":
 		if block.Bookmark != nil {
 			s := block.Bookmark.URL
 			if len(block.Bookmark.Caption) > 0 {
 				s += " — " + block.Bookmark.Caption[0].PlainText
 			}
-			return s
+			return s, true
 		}
+		return "(empty)", true
 	case "equation":
 		if block.Equation != nil {
-			return "$" + block.Equation.Expression + "$"
+			return "$" + block.Equation.Expression + "$", true
 		}
+		return "(empty)", true
 	case "table":
 		if block.Table != nil {
 			col := "no"
@@ -515,23 +534,26 @@ func blockRichText(block Block) []RichText {
 			if block.Table.HasRowHeader {
 				row = "yes"
 			}
-			return fmt.Sprintf("table (%d cols, %s col header, %s row header)", block.Table.TableWidth, col, row)
+			return fmt.Sprintf("table (%d cols, %s col header, %s row header)", block.Table.TableWidth, col, row), true
 		}
+		return "(empty)", true
 	case "table_row":
 		if block.TableRow != nil {
-			return formatTableRow(block.TableRow)
+			return formatTableRow(block.TableRow), true
 		}
+		return "(empty)", true
 	case "synced_block":
 		if block.SyncedBlock != nil {
 			if block.SyncedBlock.SyncedFrom != nil {
-				return fmt.Sprintf("(synced from %s)", block.SyncedBlock.SyncedFrom.BlockID)
+				return fmt.Sprintf("(synced from %s)", block.SyncedBlock.SyncedFrom.BlockID), true
 			}
-			return "(synced original)"
+			return "(synced original)", true
 		}
+		return "(empty)", true
 	case "column_list", "column":
-		return ""
+		return "", true
 	}
-	return nil
+	return "", false
 }
 
 // GetBlockContent extracts displayable text from any block type. For
@@ -543,6 +565,9 @@ func blockRichText(block Block) []RichText {
 func GetBlockContent(block Block) string {
 	if block.Type == "divider" {
 		return "───────────"
+	}
+	if s, ok := extendedBlockContent(block); ok {
+		return s
 	}
 	rt := blockRichText(block)
 	if len(rt) == 0 {
@@ -558,6 +583,9 @@ func GetBlockContent(block Block) string {
 func GetBlockContentPlain(block Block) string {
 	if block.Type == "divider" {
 		return "───────────"
+	}
+	if s, ok := extendedBlockContent(block); ok {
+		return s
 	}
 	rt := blockRichText(block)
 	if len(rt) == 0 {

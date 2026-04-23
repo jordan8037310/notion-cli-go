@@ -298,6 +298,10 @@ func WithLanguage(lang string) BlockOption {
 // blocks and the LaTeX expression for equation blocks. Optional behaviour
 // (file_upload id, captions, language) is supplied via BlockOption values.
 // Text is ignored for the divider block.
+//
+// This is the single-segment write path — callers that need annotations,
+// mentions, inline equations, or multi-segment rich text must use
+// AddRichTextBlock instead ([]RichText payload).
 func (b *BlockClient) AddBlock(ctx context.Context, pageID, blockType, text string, opts ...BlockOption) error {
 	if !IsValidBlockType(blockType) {
 		return fmt.Errorf("unsupported block type: %s", blockType)
@@ -467,12 +471,12 @@ func captionRichText(s string) []map[string]interface{} {
 	}
 }
 
-// AddRichTextBlock appends a block of the given type to pageID, using a
-// caller-supplied rich-text array verbatim. Unlike AddBlock (which
-// wraps a single plain-text segment), this path preserves annotations,
-// mentions, inline equations, and multi-segment runs — it is the write
-// side of rich-text fidelity. Divider blocks carry no rich text; use
-// AddBlock for those.
+// AddRichTextBlock appends a block of the given type to the given page,
+// using a caller-supplied rich-text array verbatim. Peer to AddBlock —
+// same (ctx, pageID, blockType, payload) parameter ordering; the payload
+// is []RichText instead of a plain string so annotations, mentions,
+// inline equations, and multi-segment runs round-trip. Divider blocks
+// carry no rich text; use AddBlock for those.
 func (b *BlockClient) AddRichTextBlock(ctx context.Context, pageID, blockType string, rt []RichText) error {
 	if !IsValidBlockType(blockType) {
 		return fmt.Errorf("unsupported block type: %s", blockType)
