@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 )
 
@@ -131,6 +130,11 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body inter
 
 // do executes the request using the Client's *http.Client. The caller is
 // responsible for reading and closing the response body.
+//
+// This wrapper currently delegates directly to *http.Client.Do, but is
+// retained as the single extension point for future cross-cutting concerns
+// (retries, rate limiting, structured logging) so individual resource
+// clients do not each need to grow their own middleware stack.
 func (c *Client) do(req *http.Request) (*http.Response, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -145,8 +149,8 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 func decodeInto(resp *http.Response, target interface{}) error {
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status code: %d, message: %s", resp.StatusCode, string(body))
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 	if target == nil {
 		return nil
@@ -163,20 +167,11 @@ func decodeInto(resp *http.Response, target interface{}) error {
 func expectStatus(resp *http.Response, want int) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != want {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status code: %d, message: %s", resp.StatusCode, string(body))
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
 }
-
-// defaultClient is the package-level Client used by the legacy top-level
-// functions (GetBlocks, AddNewToDoItem, etc.). It is reconfigured when
-// callers mutate the baseURL via SetBaseURL, which preserves existing
-// httptest-based test wiring.
-//
-// New code should construct its own Client via NewClient rather than
-// reaching for the default.
-var defaultClient = NewClient("", WithBaseURL(DefaultBaseURL))
 
 // defaultCtx returns a context for legacy package-level callers that do not
 // yet plumb context.Context. Kept tight so it is easy to find and remove
