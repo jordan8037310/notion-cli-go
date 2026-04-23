@@ -467,6 +467,47 @@ func captionRichText(s string) []map[string]interface{} {
 	}
 }
 
+// AddRichTextBlock appends a block of the given type to pageID, using a
+// caller-supplied rich-text array verbatim. Unlike AddBlock (which
+// wraps a single plain-text segment), this path preserves annotations,
+// mentions, inline equations, and multi-segment runs — it is the write
+// side of rich-text fidelity. Divider blocks carry no rich text; use
+// AddBlock for those.
+func (b *BlockClient) AddRichTextBlock(ctx context.Context, pageID, blockType string, rt []RichText) error {
+	if !IsValidBlockType(blockType) {
+		return fmt.Errorf("unsupported block type: %s", blockType)
+	}
+	if blockType == "divider" {
+		return fmt.Errorf("divider blocks do not accept rich text; use AddBlock")
+	}
+	if len(rt) == 0 {
+		return fmt.Errorf("rich text must have at least one segment")
+	}
+
+	innerContent := map[string]interface{}{"rich_text": richTextToAPI(rt)}
+	if blockType == "code" {
+		innerContent["language"] = "plain text"
+	}
+	body := map[string]interface{}{
+		"children": []map[string]interface{}{
+			{
+				"object":  "block",
+				"type":    blockType,
+				blockType: innerContent,
+			},
+		},
+	}
+	req, err := b.c.newRequest(ctx, http.MethodPatch, "/blocks/"+pageID+"/children", body)
+	if err != nil {
+		return err
+	}
+	resp, err := b.c.do(req)
+	if err != nil {
+		return err
+	}
+	return expectStatus(resp, http.StatusOK)
+}
+
 // DeleteBlock removes the block at the given 1-based index across the full
 // paginated block list.
 func (b *BlockClient) DeleteBlock(ctx context.Context, pageID string, order int) error {
