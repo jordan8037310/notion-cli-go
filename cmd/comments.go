@@ -92,7 +92,12 @@ var commentsCreateCmd = &cobra.Command{
 Without --discussion-id, the positional id is treated as a page or block id
 and a top-level comment is posted. With --discussion-id, the positional id
 is ignored (pass "-" if you have no natural id to supply) and the comment
-is appended to the named discussion thread.`,
+is appended to the named discussion thread.
+
+Note: when posting a top-level comment the id you pass is sent on the wire
+as parent.block_id regardless of whether it refers to a page or a block.
+The Notion comments API treats page ids as block ids for this endpoint, so
+a single field serves both cases.`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		target := args[0]
