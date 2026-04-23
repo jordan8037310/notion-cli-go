@@ -32,20 +32,41 @@ var ErrFileUploadNotSupported = errors.New("file uploads are not supported on No
 // keep working when the stub flips to a real upload.
 const MaxFileUploadBytes int64 = 20 * 1024 * 1024
 
+// FileRefTypeFileUpload is the Notion "type" discriminator for a file
+// reference created through /v1/file_uploads. Exposed as a constant so block
+// and page payload builders spell the literal exactly once — prevents typo
+// drift (e.g. "file-upload", "fileupload") that a string-typed field would
+// otherwise allow.
+const FileRefTypeFileUpload = "file_upload"
+
 // FileRef is the shape returned by a successful upload. Type is always
-// "file_upload" for files created via /v1/file_uploads — the constant lets
-// callers feed a FileRef directly into block create / page icon / page cover
-// payloads without caring where the reference came from.
+// FileRefTypeFileUpload for files created via /v1/file_uploads — the
+// constant lets callers feed a FileRef directly into block create / page
+// icon / page cover payloads without caring where the reference came from.
 //
 // Name and ExpiryTime are populated when Notion returns them. ExpiryTime is
 // an RFC3339 timestamp (per the Notion API) kept as a string so the envelope
 // round-trips unchanged even if Notion adds timezone or precision variants
 // in a future version.
+//
+// Prefer NewFileRef for construction so Type is pinned to the constant.
 type FileRef struct {
 	ID         string `json:"id"`
 	Type       string `json:"type"`
 	Name       string `json:"name,omitempty"`
 	ExpiryTime string `json:"expiry_time,omitempty"`
+}
+
+// NewFileRef builds a FileRef with Type pinned to FileRefTypeFileUpload. The
+// real upload implementation (#11) should prefer this constructor over
+// struct-literal construction so the discriminator cannot drift. ExpiryTime
+// is set separately by the caller when the upload response carries it.
+func NewFileRef(id, name string) *FileRef {
+	return &FileRef{
+		ID:   id,
+		Type: FileRefTypeFileUpload,
+		Name: name,
+	}
 }
 
 // FileUploadRequest is the body for POST /v1/file_uploads. Mode selects the
