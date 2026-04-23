@@ -14,18 +14,85 @@ import (
 
 // newTestStore returns an AliasStore rooted in t.TempDir() so each test
 // gets an isolated filesystem path. No HOME mutation is required because
-// the store is given an explicit Path.
-func newTestStore(t *testing.T) *AliasStore {
-	t.Helper()
-	dir := t.TempDir()
+// the store is given an explicit Path. Accepts testing.TB so benchmarks
+// and subtests can share the same scaffold.
+func newTestStore(tb testing.TB) *AliasStore {
+	tb.Helper()
+	dir := tb.TempDir()
 	return &AliasStore{Path: filepath.Join(dir, "pages.yaml")}
+}
+
+// seedLoadMissingStore is the shared setup for the "missing file = empty
+// map" contract. Kept distinct from newTestStore only to document intent
+// at call sites — both the behavioural test and the gap-gate alias test
+// use this helper instead of reaching into each other's frames.
+func seedLoadMissingStore(tb testing.TB) *AliasStore {
+	tb.Helper()
+	return newTestStore(tb)
+}
+
+// seedResolveLookupStore is the shared setup for the "alias resolves to
+// stored id" contract. It builds a fresh store and writes a single known
+// entry. Used by both the behavioural test and the gap-gate alias test
+// so neither reaches into the other's frame.
+func seedResolveLookupStore(tb testing.TB) (*AliasStore, string, string) {
+	tb.Helper()
+	const name = "work"
+	const id = "11111111111111111111111111111111"
+	s := newTestStore(tb)
+	if err := s.Set(name, id); err != nil {
+		tb.Fatalf("seed Set: %v", err)
+	}
+	return s, name, id
+}
+
+// seedSetRoundTripStore performs the round-trip mutations used by both
+// TestAliasStore_SetRoundTrip and TestSet. Returning the store lets each
+// caller assert the observable state without duplicating the mutation
+// sequence.
+func seedSetRoundTripStore(tb testing.TB) *AliasStore {
+	tb.Helper()
+	s := newTestStore(tb)
+	if err := s.Set("work", "11111111111111111111111111111111"); err != nil {
+		tb.Fatalf("Set work: %v", err)
+	}
+	if err := s.Set("journal", "22222222-2222-2222-2222-222222222222"); err != nil {
+		tb.Fatalf("Set journal: %v", err)
+	}
+	// Overwrite work with a new id to prove Set upserts rather than
+	// appending a duplicate entry.
+	if err := s.Set("work", "33333333333333333333333333333333"); err != nil {
+		tb.Fatalf("Set overwrite: %v", err)
+	}
+	return s
+}
+
+// assertSetRoundTripState is the shared post-condition check for the
+// seedSetRoundTripStore scaffold. Keeps both TestAliasStore_SetRoundTrip
+// and the gap-gate alias TestSet asserting the same invariant without a
+// test-to-test call.
+func assertSetRoundTripState(tb testing.TB, s *AliasStore) {
+	tb.Helper()
+	m, err := s.All()
+	if err != nil {
+		tb.Fatalf("All: %v", err)
+	}
+	if len(m) != 2 {
+		tb.Fatalf("len=%d want 2; got=%v", len(m), m)
+	}
+	if m["work"] != "33333333333333333333333333333333" {
+		tb.Errorf("work=%q want overwritten id", m["work"])
+	}
+	if m["journal"] != "22222222-2222-2222-2222-222222222222" {
+		tb.Errorf("journal=%q", m["journal"])
+	}
 }
 
 // TestAliasStore_LoadMissingReturnsEmpty locks the documented contract:
 // a missing file is not an error. Load returns an empty map so the list
 // command can render an empty state without a specialised error branch.
 func TestAliasStore_LoadMissingReturnsEmpty(t *testing.T) {
-	s := newTestStore(t)
+	s := seedLoadMissingStore(t)
 	m, err := s.Load()
 	if err != nil {
 		t.Fatalf("Load missing: unexpected err: %v", err)
@@ -155,16 +222,13 @@ func TestAliasStore_ResolvePassesThroughIDs(t *testing.T) {
 // resolves to the stored id. The error branch for "alias not found" is
 // covered in its own test so each assertion stays tight.
 func TestAliasStore_ResolveLookup(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.Set("work", "11111111111111111111111111111111"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	got, err := s.Resolve("work")
+	s, name, id := seedResolveLookupStore(t)
+	got, err := s.Resolve(name)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if got != "11111111111111111111111111111111" {
-		t.Errorf("Resolve=%q", got)
+	if got != id {
+		t.Errorf("Resolve=%q want %q", got, id)
 	}
 }
 
@@ -195,32 +259,12 @@ func TestAliasStore_ResolveEmpty(t *testing.T) {
 
 // TestAliasStore_SetRoundTrip exercises the write/read cycle: Set
 // creates the file, Load returns the written entry, and Set again
-// overwrites the prior value rather than appending a duplicate.
+// overwrites the prior value rather than appending a duplicate. The
+// seed + assertion live in helpers so the gap-gate alias TestSet can
+// replay the same scenario without calling this test directly.
 func TestAliasStore_SetRoundTrip(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.Set("work", "11111111111111111111111111111111"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	if err := s.Set("journal", "22222222-2222-2222-2222-222222222222"); err != nil {
-		t.Fatalf("Set journal: %v", err)
-	}
-	// Overwrite work with a new id.
-	if err := s.Set("work", "33333333333333333333333333333333"); err != nil {
-		t.Fatalf("Set overwrite: %v", err)
-	}
-	m, err := s.All()
-	if err != nil {
-		t.Fatalf("All: %v", err)
-	}
-	if len(m) != 2 {
-		t.Fatalf("len=%d want 2; got=%v", len(m), m)
-	}
-	if m["work"] != "33333333333333333333333333333333" {
-		t.Errorf("work=%q want overwritten id", m["work"])
-	}
-	if m["journal"] != "22222222-2222-2222-2222-222222222222" {
-		t.Errorf("journal=%q", m["journal"])
-	}
+	s := seedSetRoundTripStore(t)
+	assertSetRoundTripState(t, s)
 }
 
 // TestAliasStore_SetRejectsEmpty covers the two argument-shape errors
@@ -292,13 +336,23 @@ func TestIsNotionID(t *testing.T) {
 
 // TestLoad is the method-name-matching alias for the gap-gate checker.
 // The full parser coverage lives in TestAliasStore_LoadParses and its
-// siblings; this wrapper just satisfies the script's name-match rule
-// and keeps the skip list clean. See scripts/check-test-coverage.sh.
-func TestLoad(t *testing.T) { TestAliasStore_LoadMissingReturnsEmpty(t) }
+// siblings; this thin wrapper replays the missing-file contract through
+// the shared scaffold so there is no test-to-test call. See
+// scripts/check-test-coverage.sh for the name-match rule.
+func TestLoad(t *testing.T) {
+	s := seedLoadMissingStore(t)
+	m, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(m) != 0 {
+		t.Errorf("Load missing: len=%d want 0", len(m))
+	}
+}
 
 // TestAll — gap-gate alias for the AliasStore.All method. Behavioural
-// coverage lives in TestAliasStore_SetRoundTrip which round-trips via
-// All().
+// coverage lives in TestAliasStore_SetRoundTrip; this version round-trips
+// a single entry through All() directly to satisfy the method-name rule.
 func TestAll(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.Set("k", "11111111111111111111111111111111"); err != nil {
@@ -313,14 +367,30 @@ func TestAll(t *testing.T) {
 	}
 }
 
-// TestResolve — gap-gate alias. Detailed behaviour is covered by
-// TestAliasStore_ResolvePassesThroughIDs, TestAliasStore_ResolveLookup,
-// TestAliasStore_ResolveMissingAlias, and TestAliasStore_ResolveEmpty.
-func TestResolve(t *testing.T) { TestAliasStore_ResolveLookup(t) }
+// TestResolve — gap-gate alias. Replays the shared lookup scaffold so
+// Resolve has its own named test without calling another Test function.
+// Detailed behaviour still lives in TestAliasStore_ResolvePassesThroughIDs,
+// TestAliasStore_ResolveLookup, TestAliasStore_ResolveMissingAlias, and
+// TestAliasStore_ResolveEmpty.
+func TestResolve(t *testing.T) {
+	s, name, id := seedResolveLookupStore(t)
+	got, err := s.Resolve(name)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got != id {
+		t.Errorf("Resolve=%q want %q", got, id)
+	}
+}
 
-// TestSet — gap-gate alias for AliasStore.Set. Detailed round-trip
-// behaviour is covered by TestAliasStore_SetRoundTrip.
-func TestSet(t *testing.T) { TestAliasStore_SetRoundTrip(t) }
+// TestSet — gap-gate alias for AliasStore.Set. Replays the round-trip
+// scaffold so the gap-gate has a same-named test without delegating to
+// TestAliasStore_SetRoundTrip. Detailed mutation ordering is documented
+// on seedSetRoundTripStore.
+func TestSet(t *testing.T) {
+	s := seedSetRoundTripStore(t)
+	assertSetRoundTripState(t, s)
+}
 
 // TestAliasStore_NilReceiver guards Load against a nil receiver so a
 // caller that forgot to construct a store gets an empty map rather than
