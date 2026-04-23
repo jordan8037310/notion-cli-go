@@ -415,6 +415,16 @@ func AddBlock(notionAPIKey, pageID, blockType, text string, opts ...BlockOption)
 	return defaultBlockClient(notionAPIKey).AddBlock(defaultCtx(), pageID, blockType, text, opts...)
 }
 
+// AddRichTextBlock delegates to BlockClient.AddRichTextBlock on a default
+// client. This is the write path that preserves annotations, mentions,
+// and multi-segment rich-text arrays — the cmd layer uses it for
+// --rich-text-json.
+//
+// Deprecated: prefer BlockClient.AddRichTextBlock.
+func AddRichTextBlock(notionAPIKey, pageID, blockType string, rt []RichText) error {
+	return defaultBlockClient(notionAPIKey).AddRichTextBlock(defaultCtx(), pageID, blockType, rt)
+}
+
 // DeleteBlock delegates to BlockClient.DeleteBlock on a default client.
 //
 // Deprecated: prefer BlockClient.DeleteBlock.
@@ -422,54 +432,56 @@ func DeleteBlock(notionAPIKey, pageID string, order int) error {
 	return defaultBlockClient(notionAPIKey).DeleteBlock(defaultCtx(), pageID, order)
 }
 
-// GetBlockContent extracts text content from any block type.
-func GetBlockContent(block Block) string {
+// blockRichText returns the rich-text slice for any block that carries
+// one, or nil for block types that do not (divider, etc.). Centralising
+// this switch keeps GetBlockContent and GetBlockContentPlain aligned —
+// any new rich-text-bearing block type added in one place lights up in
+// both renderers automatically.
+func blockRichText(block Block) []RichText {
 	switch block.Type {
-	case "divider":
-		return "───────────"
 	case "to_do":
-		if block.ToDo != nil && len(block.ToDo.RichText) > 0 {
-			return block.ToDo.RichText[0].PlainText
+		if block.ToDo != nil {
+			return block.ToDo.RichText
 		}
 	case "paragraph":
-		if block.Paragraph != nil && len(block.Paragraph.RichText) > 0 {
-			return block.Paragraph.RichText[0].PlainText
+		if block.Paragraph != nil {
+			return block.Paragraph.RichText
 		}
 	case "heading_1":
-		if block.Heading1 != nil && len(block.Heading1.RichText) > 0 {
-			return block.Heading1.RichText[0].PlainText
+		if block.Heading1 != nil {
+			return block.Heading1.RichText
 		}
 	case "heading_2":
-		if block.Heading2 != nil && len(block.Heading2.RichText) > 0 {
-			return block.Heading2.RichText[0].PlainText
+		if block.Heading2 != nil {
+			return block.Heading2.RichText
 		}
 	case "heading_3":
-		if block.Heading3 != nil && len(block.Heading3.RichText) > 0 {
-			return block.Heading3.RichText[0].PlainText
+		if block.Heading3 != nil {
+			return block.Heading3.RichText
 		}
 	case "bulleted_list_item":
-		if block.BulletedListItem != nil && len(block.BulletedListItem.RichText) > 0 {
-			return block.BulletedListItem.RichText[0].PlainText
+		if block.BulletedListItem != nil {
+			return block.BulletedListItem.RichText
 		}
 	case "numbered_list_item":
-		if block.NumberedListItem != nil && len(block.NumberedListItem.RichText) > 0 {
-			return block.NumberedListItem.RichText[0].PlainText
+		if block.NumberedListItem != nil {
+			return block.NumberedListItem.RichText
 		}
 	case "toggle":
-		if block.Toggle != nil && len(block.Toggle.RichText) > 0 {
-			return block.Toggle.RichText[0].PlainText
+		if block.Toggle != nil {
+			return block.Toggle.RichText
 		}
 	case "quote":
-		if block.Quote != nil && len(block.Quote.RichText) > 0 {
-			return block.Quote.RichText[0].PlainText
+		if block.Quote != nil {
+			return block.Quote.RichText
 		}
 	case "callout":
-		if block.Callout != nil && len(block.Callout.RichText) > 0 {
-			return block.Callout.RichText[0].PlainText
+		if block.Callout != nil {
+			return block.Callout.RichText
 		}
 	case "code":
-		if block.Code != nil && len(block.Code.RichText) > 0 {
-			return block.Code.RichText[0].PlainText
+		if block.Code != nil {
+			return block.Code.RichText
 		}
 	case "image":
 		return mediaBlockContent(block.Image)
@@ -519,7 +531,39 @@ func GetBlockContent(block Block) string {
 	case "column_list", "column":
 		return ""
 	}
-	return "(empty)"
+	return nil
+}
+
+// GetBlockContent extracts displayable text from any block type. For
+// rich-text-bearing blocks the full segment array is rendered via
+// RenderRichText (annotations → ANSI, mentions → markers, equations →
+// "$…$") so callers see the whole block, not just the first segment.
+// fatih/color respects color.NoColor — when --json toggles that off,
+// RenderRichText emits plain text without ANSI escapes.
+func GetBlockContent(block Block) string {
+	if block.Type == "divider" {
+		return "───────────"
+	}
+	rt := blockRichText(block)
+	if len(rt) == 0 {
+		return "(empty)"
+	}
+	return RenderRichText(rt)
+}
+
+// GetBlockContentPlain returns the block's text with no annotations,
+// mention markers, or equation delimiters applied — just the concatenated
+// PlainText of every segment. Use this from tests and JSON paths that
+// want a stable string and don't care about the visual rendering.
+func GetBlockContentPlain(block Block) string {
+	if block.Type == "divider" {
+		return "───────────"
+	}
+	rt := blockRichText(block)
+	if len(rt) == 0 {
+		return "(empty)"
+	}
+	return PlainRichText(rt)
 }
 
 // mediaBlockContent returns a human-readable one-liner for a MediaBlock.
