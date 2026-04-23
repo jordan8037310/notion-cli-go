@@ -27,25 +27,14 @@ var (
 	viewsUpdateConfigFile string
 )
 
-// viewsCmd is the parent command for view-related operations. The views
-// endpoints are not available on the pinned Notion-Version (2022-06-28);
-// see issue #11 for the version bump that will enable the real
-// implementation. Until then every subcommand validates its input and
-// then surfaces utils.ErrViewsNotSupported so callers can branch on it
-// via errors.Is.
+// viewsCmd is the parent command for view-related operations. Requires
+// Notion-Version 2026-03-11 or newer (data-source views endpoint).
 var viewsCmd = &cobra.Command{
 	Use:   "views",
-	Short: "Manage Notion database views (pending API version bump)",
+	Short: "Manage Notion database views",
 	Long: `Create and update Notion database views.
 
-The views / data-sources endpoints require a newer Notion-Version than
-the one this CLI currently pins (2022-06-28). Issue #11 tracks the
-version bump that will enable the real implementation. Until then each
-subcommand validates its arguments and returns a clear "views not
-supported" error so shell callers see a non-zero exit code and can
-retry once #11 lands without changing their invocations.
-
-Examples (usable once #11 ships):
+Examples:
   notioncli views create <database-id> --name "Backlog" --type board
   notioncli views create <database-id> --name "Q2" --type timeline --config-json q2.json
   notioncli views update <view-id> --name "Renamed"
@@ -55,8 +44,7 @@ Examples (usable once #11 ships):
 // newViewClient builds a ViewClient using the CLI's standard config
 // loading so every subcommand shares identical client construction.
 // Returns utils.ErrMissingAPIKey (wrapped) when NOTION_API_KEY resolves
-// empty so callers see a configuration error instead of a downstream
-// 401 once #11 lands.
+// empty so callers see a configuration error instead of a downstream 401.
 func newViewClient() (*utils.ViewClient, error) {
 	apiKey, _ := utils.SetAPIConfig()
 	if apiKey == "" {
@@ -103,14 +91,11 @@ func readConfigJSON(path string) (json.RawMessage, error) {
 var viewsCreateCmd = &cobra.Command{
 	Use:   "create <database-id>",
 	Short: "Create a new view on a database",
-	Long: `Create a new view on the given database.
+	Long: `Create a new view on the given database (data source).
 
 The --type flag must be one of: table, board, list, gallery, calendar,
 timeline. The optional --config-json flag points at a JSON file whose
-contents are forwarded verbatim as the view's configuration payload.
-
-Note: views are not supported on the pinned Notion-Version 2022-06-28;
-see issue #11 for the tracking bump.`,
+contents are forwarded verbatim as the view's configuration payload.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if viewsCreateName == "" {
@@ -156,10 +141,7 @@ var viewsUpdateCmd = &cobra.Command{
 
 At least one of --name or --config-json must be provided. The
 --config-json flag points at a JSON file whose contents are forwarded
-verbatim as the view's configuration payload.
-
-Note: views are not supported on the pinned Notion-Version 2022-06-28;
-see issue #11 for the tracking bump.`,
+verbatim as the view's configuration payload.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if viewsUpdateName == "" && viewsUpdateConfigFile == "" {

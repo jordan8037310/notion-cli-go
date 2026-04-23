@@ -14,8 +14,7 @@ import (
 )
 
 // resetViewsFlags restores package-level view flag vars to their zero
-// values between tests. cobra persists flag state on the shared command
-// instances, so tests that share rootCmd must reset between runs.
+// values between tests.
 func resetViewsFlags() {
 	viewsCreateName = ""
 	viewsCreateType = ""
@@ -39,8 +38,7 @@ func findViewsSubcommand(t *testing.T, name string) *cobra.Command {
 }
 
 // TestViews_CreateTypeFlagHelpFromValidViewTypes asserts the --type
-// flag's help text lists every value in utils.ValidViewTypes so the
-// help can't drift if the validator's accepted set changes.
+// flag's help text lists every value in utils.ValidViewTypes.
 func TestViews_CreateTypeFlagHelpFromValidViewTypes(t *testing.T) {
 	sub := findViewsSubcommand(t, "create")
 	typeFlag := sub.Flags().Lookup("type")
@@ -71,8 +69,8 @@ func TestViews_CmdRegistered(t *testing.T) {
 	}
 }
 
-// TestViews_SubcommandsValid asserts each subcommand is a non-empty
-// *cobra.Command (catches nil-pointer registration bugs).
+// TestViews_SubcommandsValid asserts each subcommand is a valid cobra
+// command with a RunE wired.
 func TestViews_SubcommandsValid(t *testing.T) {
 	for _, name := range []string{"create", "update"} {
 		sub := findViewsSubcommand(t, name)
@@ -85,33 +83,30 @@ func TestViews_SubcommandsValid(t *testing.T) {
 	}
 }
 
-// TestViews_Create_DispatchSurfacesStub runs `views create ...` and
-// asserts that rootCmd.Execute returns a non-nil error — proving the
-// stub's ErrViewsNotSupported propagates up through cobra so shell
-// callers see a non-zero exit code.
-func TestViews_Create_DispatchSurfacesStub(t *testing.T) {
+// TestViews_Create_HappyPath runs `views create ...` against the shared
+// mock server (extended to handle /data_sources/*/views) and verifies
+// the View is printed.
+func TestViews_Create_HappyPath(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetViewsFlags()
 	resetRootCmdArgs()
 
-	rootCmd.SetArgs([]string{"views", "create", "dbID", "--name", "My View", "--type", "table"})
+	var buf bytes.Buffer
+	rootCmd.SetArgs([]string{"views", "create", "db-id", "--name", "My View", "--type", "table"})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
-	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
 
-	err := rootCmd.Execute()
-	if err == nil {
-		t.Fatal("views create: expected non-nil error from stub, got nil")
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("views create: %v", err)
 	}
-	if !errors.Is(err, utils.ErrViewsNotSupported) {
-		t.Errorf("views create: want errors.Is ErrViewsNotSupported, got %v", err)
+	if !strings.Contains(buf.String(), "view-created-id") {
+		t.Errorf("views create output missing view id:\n%s", buf.String())
 	}
 }
 
-// TestViews_Create_MissingName asserts the --name flag is required and
-// that RunE returns a non-nil error (before ever touching the stub).
+// TestViews_Create_MissingName asserts the --name flag is required.
 func TestViews_Create_MissingName(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetViewsFlags()
@@ -123,9 +118,6 @@ func TestViews_Create_MissingName(t *testing.T) {
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Fatal("expected error when --name missing, got nil")
-	}
-	if errors.Is(err, utils.ErrViewsNotSupported) {
-		t.Errorf("expected flag-validation error, got stub sentinel: %v", err)
 	}
 	if !strings.Contains(err.Error(), "--name") {
 		t.Errorf("error = %q; want substring %q", err.Error(), "--name")
@@ -144,9 +136,6 @@ func TestViews_Create_MissingType(t *testing.T) {
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Fatal("expected error when --type missing, got nil")
-	}
-	if errors.Is(err, utils.ErrViewsNotSupported) {
-		t.Errorf("expected flag-validation error, got stub sentinel: %v", err)
 	}
 	if !strings.Contains(err.Error(), "--type") {
 		t.Errorf("error = %q; want substring %q", err.Error(), "--type")
@@ -168,34 +157,31 @@ func TestViews_Create_WrongArgCount(t *testing.T) {
 	}
 }
 
-// TestViews_Create_AllTypesDispatchStub cycles through every supported
-// --type value and verifies each dispatches to the stub (vs being
-// rejected as invalid at the CLI layer). Guards against silently
-// dropping a supported type during refactors.
-func TestViews_Create_AllTypesDispatchStub(t *testing.T) {
+// TestViews_Create_AllTypesHappyPath cycles through every supported
+// --type value and verifies each dispatches to the mock (which echoes
+// each type back).
+func TestViews_Create_AllTypesHappyPath(t *testing.T) {
 	for _, vt := range utils.ValidViewTypes {
 		t.Run(vt, func(t *testing.T) {
 			_ = withCmdEnv(t)
 			resetViewsFlags()
 			resetRootCmdArgs()
 
-			rootCmd.SetArgs([]string{"views", "create", "dbID", "--name", "n", "--type", vt})
+			var buf bytes.Buffer
+			rootCmd.SetArgs([]string{"views", "create", "db-id", "--name", "n", "--type", vt})
 			rootCmd.SilenceUsage = true
 			rootCmd.SilenceErrors = true
-			err := rootCmd.Execute()
-			if err == nil {
-				t.Fatalf("views create --type %s: expected error, got nil", vt)
-			}
-			if !errors.Is(err, utils.ErrViewsNotSupported) {
-				t.Errorf("views create --type %s: want ErrViewsNotSupported, got %v", vt, err)
+			rootCmd.SetOut(&buf)
+			rootCmd.SetErr(&buf)
+			if err := rootCmd.Execute(); err != nil {
+				t.Fatalf("views create --type %s: %v", vt, err)
 			}
 		})
 	}
 }
 
 // TestViews_Create_WithConfigJSON asserts --config-json is read from
-// disk and forwarded into the request (still dispatching to the stub
-// today).
+// disk and forwarded into the request.
 func TestViews_Create_WithConfigJSON(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetViewsFlags()
@@ -207,20 +193,19 @@ func TestViews_Create_WithConfigJSON(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	rootCmd.SetArgs([]string{"views", "create", "dbID", "--name", "n", "--type", "table", "--config-json", path})
+	var buf bytes.Buffer
+	rootCmd.SetArgs([]string{"views", "create", "db-id", "--name", "n", "--type", "table", "--config-json", path})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
-	err := rootCmd.Execute()
-	if err == nil {
-		t.Fatal("expected stub error, got nil")
-	}
-	if !errors.Is(err, utils.ErrViewsNotSupported) {
-		t.Errorf("want ErrViewsNotSupported, got %v", err)
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("views create: %v", err)
 	}
 }
 
 // TestViews_Create_BadConfigJSON asserts a malformed JSON file produces
-// a parse error ahead of the stub.
+// a parse error.
 func TestViews_Create_BadConfigJSON(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetViewsFlags()
@@ -239,16 +224,13 @@ func TestViews_Create_BadConfigJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected parse error, got nil")
 	}
-	if errors.Is(err, utils.ErrViewsNotSupported) {
-		t.Errorf("parse error swallowed by stub: %v", err)
-	}
 	if !strings.Contains(err.Error(), "config-json") {
 		t.Errorf("error = %q; want substring %q", err.Error(), "config-json")
 	}
 }
 
 // TestViews_Create_MissingConfigJSONFile asserts a non-existent config
-// file produces an open error ahead of the stub.
+// file produces an open error.
 func TestViews_Create_MissingConfigJSONFile(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetViewsFlags()
@@ -261,32 +243,31 @@ func TestViews_Create_MissingConfigJSONFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected open error, got nil")
 	}
-	if errors.Is(err, utils.ErrViewsNotSupported) {
-		t.Errorf("open error swallowed by stub: %v", err)
-	}
 }
 
-// TestViews_Update_DispatchSurfacesStub runs `views update <id> --name`
-// and asserts the stub error propagates.
-func TestViews_Update_DispatchSurfacesStub(t *testing.T) {
+// TestViews_Update_HappyPath runs `views update <id> --name` against the
+// mock and verifies the updated View is printed.
+func TestViews_Update_HappyPath(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetViewsFlags()
 	resetRootCmdArgs()
 
-	rootCmd.SetArgs([]string{"views", "update", "viewID", "--name", "Renamed"})
+	var buf bytes.Buffer
+	rootCmd.SetArgs([]string{"views", "update", "view-id", "--name", "Renamed"})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
-	err := rootCmd.Execute()
-	if err == nil {
-		t.Fatal("views update: expected non-nil error from stub, got nil")
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("views update: %v", err)
 	}
-	if !errors.Is(err, utils.ErrViewsNotSupported) {
-		t.Errorf("views update: want errors.Is ErrViewsNotSupported, got %v", err)
+	if !strings.Contains(buf.String(), "view-updated-id") {
+		t.Errorf("views update output missing id:\n%s", buf.String())
 	}
 }
 
 // TestViews_Update_NoFlags asserts at least one mutation flag is
-// required. The error must precede the stub.
+// required.
 func TestViews_Update_NoFlags(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetViewsFlags()
@@ -299,13 +280,10 @@ func TestViews_Update_NoFlags(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no mutation flags, got nil")
 	}
-	if errors.Is(err, utils.ErrViewsNotSupported) {
-		t.Errorf("expected flag-validation error, got stub sentinel: %v", err)
-	}
 }
 
 // TestViews_Update_WithConfigJSON asserts config-only updates are
-// accepted and dispatched to the stub.
+// accepted.
 func TestViews_Update_WithConfigJSON(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetViewsFlags()
@@ -317,30 +295,23 @@ func TestViews_Update_WithConfigJSON(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	rootCmd.SetArgs([]string{"views", "update", "viewID", "--config-json", path})
+	rootCmd.SetArgs([]string{"views", "update", "view-id", "--config-json", path})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
-	err := rootCmd.Execute()
-	if err == nil {
-		t.Fatal("expected stub error, got nil")
-	}
-	if !errors.Is(err, utils.ErrViewsNotSupported) {
-		t.Errorf("want ErrViewsNotSupported, got %v", err)
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("views update: %v", err)
 	}
 }
 
 // TestViews_Create_ValidationBeforeClientBuild asserts that a bad
 // --type value surfaces the request-validation error and does NOT leak
-// the ErrMissingAPIKey that newViewClient would otherwise return when
-// the env is blank. Ordering: validate request first, then build client.
+// ErrMissingAPIKey.
 func TestViews_Create_ValidationBeforeClientBuild(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetViewsFlags()
 	resetRootCmdArgs()
 
-	// Force the client-build path to fail if it runs, so we can prove
-	// validation ran first by observing the precise validation error
-	// instead of ErrMissingAPIKey.
+	// Force the client-build path to fail if it runs.
 	t.Setenv("NOTION_API_KEY", "")
 
 	rootCmd.SetArgs([]string{"views", "create", "dbID", "--name", "n", "--type", "bogus"})
@@ -359,16 +330,12 @@ func TestViews_Create_ValidationBeforeClientBuild(t *testing.T) {
 }
 
 // TestViews_NewViewClient_MissingAPIKey asserts that newViewClient
-// returns ErrMissingAPIKey (wrapped) when NOTION_API_KEY resolves empty
-// rather than silently building a Client that would later 401 on the
-// real #11 implementation.
+// returns ErrMissingAPIKey (wrapped) when NOTION_API_KEY resolves empty.
 func TestViews_NewViewClient_MissingAPIKey(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetViewsFlags()
 	resetRootCmdArgs()
 
-	// Blank out the API key after the usual cmd env has been set up.
-	// withCmdEnv's .env file is empty so the Setenv below wins.
 	t.Setenv("NOTION_API_KEY", "")
 
 	vc, err := newViewClient()
@@ -383,19 +350,7 @@ func TestViews_NewViewClient_MissingAPIKey(t *testing.T) {
 	}
 }
 
-// TestViews_ErrExposedViaUtils is a belt-and-braces check that the cmd
-// layer is paired with the utils stub so a future refactor can't
-// silently drop the error.
-func TestViews_ErrExposedViaUtils(t *testing.T) {
-	if utils.ErrViewsNotSupported == nil {
-		t.Fatal("utils.ErrViewsNotSupported must be non-nil for views commands to surface a stable error")
-	}
-}
-
-// TestViews_ReadConfigJSON covers readConfigJSON directly so the helper
-// has coverage independent of the RunE paths. Exercises the empty-path
-// shortcut, the empty-file rejection, and the round-trip-fidelity goal
-// of json.RawMessage (bytes preserved verbatim, numbers not coerced).
+// TestViews_ReadConfigJSON covers readConfigJSON directly.
 func TestViews_ReadConfigJSON(t *testing.T) {
 	if got, err := readConfigJSON(""); err != nil || got != nil {
 		t.Errorf("readConfigJSON(\"\") = (%v, %v); want (nil, nil)", got, err)
@@ -425,8 +380,7 @@ func TestViews_ReadConfigJSON(t *testing.T) {
 }
 
 // TestViews_PrintView drives printView to cover both the nil-view and
-// happy-path branches. Writes into a bytes.Buffer so output assertions
-// are deterministic.
+// happy-path branches.
 func TestViews_PrintView(t *testing.T) {
 	var buf bytes.Buffer
 	printView(&buf, nil)
