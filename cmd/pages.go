@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"notioncli/utils"
@@ -87,18 +89,17 @@ var pagesGetCmd = &cobra.Command{
 	Use:   "get <id>",
 	Short: "Retrieve a page by ID",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		pc, err := newPageClient()
 		if err != nil {
-			color.Red("Error: %v", err)
-			return
+			return err
 		}
 		page, err := pc.Get(context.Background(), args[0])
 		if err != nil {
-			color.Red("Error getting page: %v", err)
-			return
+			return fmt.Errorf("get page: %w", err)
 		}
-		printPage(page)
+		printPage(cmd.OutOrStdout(), page)
+		return nil
 	},
 }
 
@@ -106,39 +107,41 @@ var pagesGetCmd = &cobra.Command{
 var pagesCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a new page under --parent",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if pagesCreateParent == "" {
-			color.Red("Error: --parent is required")
-			return
+			return fmt.Errorf("create page: --parent is required")
 		}
 		pc, err := newPageClient()
 		if err != nil {
-			color.Red("Error: %v", err)
-			return
+			return err
 		}
 		page, err := pc.Create(context.Background(), utils.CreatePageRequest{
 			Parent: utils.PageParent{PageID: pagesCreateParent},
 			Title:  pagesCreateTitle,
 		})
 		if err != nil {
-			color.Red("Error creating page: %v", err)
-			return
+			return fmt.Errorf("create page: %w", err)
 		}
 		color.Green("Created page %s", page.ID)
-		printPage(page)
+		printPage(cmd.OutOrStdout(), page)
+		return nil
 	},
 }
 
 // pagesUpdateCmd patches title and/or --property key=value pairs on a page.
+//
+// Note: --property key=value values are always encoded as rich_text today.
+// Typed properties (status, select, number, date, checkbox, url) will 400
+// against that shape; callers that need a typed property should use the
+// PageClient.Update API directly until a typed flag shape lands.
 var pagesUpdateCmd = &cobra.Command{
 	Use:   "update <id>",
 	Short: "Update a page's title and/or properties",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		pc, err := newPageClient()
 		if err != nil {
-			color.Red("Error: %v", err)
-			return
+			return err
 		}
 		req := utils.UpdatePageRequest{Title: pagesUpdateTitle}
 		if len(pagesUpdateProps) > 0 {
@@ -146,19 +149,18 @@ var pagesUpdateCmd = &cobra.Command{
 			for _, raw := range pagesUpdateProps {
 				key, val, err := parseProperty(raw)
 				if err != nil {
-					color.Red("Error: %v", err)
-					return
+					return err
 				}
 				req.Properties[key] = val
 			}
 		}
 		page, err := pc.Update(context.Background(), args[0], req)
 		if err != nil {
-			color.Red("Error updating page: %v", err)
-			return
+			return fmt.Errorf("update page: %w", err)
 		}
 		color.Green("Updated page %s", page.ID)
-		printPage(page)
+		printPage(cmd.OutOrStdout(), page)
+		return nil
 	},
 }
 
@@ -167,17 +169,16 @@ var pagesArchiveCmd = &cobra.Command{
 	Use:   "archive <id>",
 	Short: "Archive a page",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		pc, err := newPageClient()
 		if err != nil {
-			color.Red("Error: %v", err)
-			return
+			return err
 		}
 		if err := pc.Archive(context.Background(), args[0]); err != nil {
-			color.Red("Error archiving page: %v", err)
-			return
+			return fmt.Errorf("archive page: %w", err)
 		}
 		color.Green("Archived page %s", args[0])
+		return nil
 	},
 }
 
@@ -186,40 +187,39 @@ var pagesUnarchiveCmd = &cobra.Command{
 	Use:   "unarchive <id>",
 	Short: "Unarchive a page",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		pc, err := newPageClient()
 		if err != nil {
-			color.Red("Error: %v", err)
-			return
+			return err
 		}
 		if err := pc.Unarchive(context.Background(), args[0]); err != nil {
-			color.Red("Error unarchiving page: %v", err)
-			return
+			return fmt.Errorf("unarchive page: %w", err)
 		}
 		color.Green("Unarchived page %s", args[0])
+		return nil
 	},
 }
 
-// pagesMoveCmd reparents a page.
+// pagesMoveCmd reparents a page. Only page-parent moves are supported; to
+// move a page into a database parent, use the lower-level PageClient.Update
+// with a PageParent{DatabaseID: ...}.
 var pagesMoveCmd = &cobra.Command{
 	Use:   "move <id>",
-	Short: "Move a page to a new parent (--parent)",
+	Short: "Move a page to a new page parent (--parent). Use the API for database parents.",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if pagesMoveParent == "" {
-			color.Red("Error: --parent is required")
-			return
+			return fmt.Errorf("move page: --parent is required")
 		}
 		pc, err := newPageClient()
 		if err != nil {
-			color.Red("Error: %v", err)
-			return
+			return err
 		}
 		if err := pc.Move(context.Background(), args[0], pagesMoveParent); err != nil {
-			color.Red("Error moving page: %v", err)
-			return
+			return fmt.Errorf("move page: %w", err)
 		}
 		color.Green("Moved page %s → parent %s", args[0], pagesMoveParent)
+		return nil
 	},
 }
 
@@ -235,48 +235,55 @@ var pagesDuplicateCmd = &cobra.Command{
 	Long: `Duplicate a Notion page under a new parent.
 
 Notion does not expose a native duplicate endpoint. This command emulates
-one by (1) fetching the source page's children, (2) creating a new page
-under --parent with the source's title, and (3) appending those children.
+one by (1) fetching the source page and its children, (2) creating a new
+page under --parent with the source's title, and (3) appending those
+children.
 
 Limitations:
   - Only top-level blocks are copied. Nested blocks where has_children=true
     are NOT recursed into.
+  - Unsupported top-level block types (image, file, video, bookmark, embed,
+    child_page, child_database, table, column_list, equation, synced_block)
+    are silently skipped.
   - Child databases are not re-created.
   - Property values from database-parented sources are not carried over.`,
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if pagesDuplicateParent == "" {
-			color.Red("Error: --parent is required")
-			return
+			return fmt.Errorf("duplicate page: --parent is required")
 		}
 		pc, err := newPageClient()
 		if err != nil {
-			color.Red("Error: %v", err)
-			return
+			return err
 		}
 		page, err := pc.Duplicate(context.Background(), args[0], pagesDuplicateParent)
 		if err != nil {
-			color.Red("Error duplicating page: %v", err)
-			return
+			return fmt.Errorf("duplicate page: %w", err)
 		}
 		color.Green("Duplicated page %s → %s", args[0], page.ID)
-		printPage(page)
+		printPage(cmd.OutOrStdout(), page)
+		return nil
 	},
 }
 
-// printPage writes a human-readable JSON blob to stdout. This is the v1
-// output format for every pages subcommand — a proper --json vs. table split
-// will land with the wider --json rollout on the roadmap.
-func printPage(page *utils.Page) {
+// printPage writes a human-readable JSON blob to the given writer. This is
+// the v1 output format for every pages subcommand — a proper --json vs.
+// table split will land with the wider --json rollout on the roadmap. The
+// writer is threaded through cmd.OutOrStdout() so tests can capture output
+// via cmd.SetOut.
+func printPage(w io.Writer, page *utils.Page) {
 	if page == nil {
 		return
+	}
+	if w == nil {
+		w = os.Stdout
 	}
 	b, err := json.MarshalIndent(page, "", "  ")
 	if err != nil {
 		color.Red("Error formatting page: %v", err)
 		return
 	}
-	fmt.Println(string(b))
+	fmt.Fprintln(w, string(b))
 }
 
 func init() {
