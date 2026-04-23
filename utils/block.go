@@ -449,11 +449,15 @@ func GetBlockContent(block Block) string {
 		}
 	case "table":
 		if block.Table != nil {
-			header := "no"
+			col := "no"
 			if block.Table.HasColumnHeader {
-				header = "yes"
+				col = "yes"
 			}
-			return fmt.Sprintf("table (%d cols, %s header)", block.Table.TableWidth, header)
+			row := "no"
+			if block.Table.HasRowHeader {
+				row = "yes"
+			}
+			return fmt.Sprintf("table (%d cols, %s col header, %s row header)", block.Table.TableWidth, col, row)
 		}
 	case "table_row":
 		if block.TableRow != nil {
