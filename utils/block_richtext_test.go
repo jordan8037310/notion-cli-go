@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestBlockRichText_GetBlockContent_MultiSegment asserts GetBlockContent
@@ -323,5 +324,66 @@ func TestAddRichTextBlock_Delegate(t *testing.T) {
 	rt := []RichText{{Type: "text", Text: Text{Content: "hi"}}}
 	if err := AddRichTextBlock("k", "pageID", "paragraph", rt); err != nil {
 		t.Fatalf("AddRichTextBlock(top-level) err = %v", err)
+	}
+}
+
+// TestBlockRichText_FormatAllBlocks_NoANSI locks down the invariant that
+// FormatAllBlocks output never contains ANSI escape codes, even when
+// color.NoColor is false and the source block carries annotations. This
+// is the guardrail reviewer flagged for PR #31 — previously
+// FormatAllBlocks built its table snippet from GetBlockContent (which
+// wraps annotated runs in ANSI escapes when color is on) and then byte-
+// sliced to 47 chars for truncation. Slicing mid-escape would leave the
+// terminal in a stuck formatting state and, more importantly, would leak
+// raw escape bytes into any future caller that writes FormatAllBlocks
+// output to a non-TTY stream (logs, JSON envelopes, piped consumers).
+// Switching the snippet to GetBlockContentPlain makes the guarantee
+// unconditional.
+func TestBlockRichText_FormatAllBlocks_NoANSI(t *testing.T) {
+	// Force color ON for the duration of this test — this is the state a
+	// human shell invocation would see. If the implementation ever
+	// regresses to GetBlockContent, this test will catch the escape leak.
+	withColorOn(t)
+
+	annotated := Block{
+		Object:         "block",
+		ID:             "ann-1",
+		Type:           "paragraph",
+		LastEditedTime: "2026-04-22T10:00:00.000Z",
+		Paragraph: &RichTextBlock{
+			RichText: []RichText{
+				{PlainText: "plain "},
+				{PlainText: "bold", Annotations: Annotation{Bold: true, Color: "red"}},
+				{PlainText: " tail"},
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/blocks/ansiPage/children" {
+			_ = json.NewEncoder(w).Encode(BlockList{Results: []Block{annotated}})
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+	prev := baseURL
+	SetBaseURL(srv.URL)
+	defer SetBaseURL(prev)
+
+	formatted, _, err := FormatAllBlocks("fakeKey", "ansiPage", time.UTC, "")
+	if err != nil {
+		t.Fatalf("FormatAllBlocks: %v", err)
+	}
+	if len(formatted) != 1 {
+		t.Fatalf("len(formatted) = %d, want 1", len(formatted))
+	}
+	line := formatted[0]
+	if strings.ContainsRune(line, 0x1b) {
+		t.Errorf("FormatAllBlocks line contains ANSI escape (0x1b): %q", line)
+	}
+	// And assert the snippet preserved the text payload verbatim — the
+	// plain renderer must not drop or reorder segments.
+	if !strings.Contains(line, "plain bold tail") {
+		t.Errorf("FormatAllBlocks line missing plain payload: %q", line)
 	}
 }

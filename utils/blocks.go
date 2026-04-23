@@ -238,7 +238,15 @@ func (b *BlockClient) FormatAllBlocks(ctx context.Context, pageID string, localT
 		}
 		truncatedTime := lastEditedTime.In(localTimezone).Truncate(time.Minute)
 		icon := GetBlockIcon(block)
-		content := GetBlockContent(block)
+		// Use the plain (no-ANSI) renderer for the table snippet: the 50-char
+		// truncation below is a byte-slice, which is unsafe on a string that
+		// might contain ANSI escape sequences (chopping mid-escape leaves
+		// the terminal in a stuck formatting state). color.NoColor is
+		// already flipped off under --json via rootCmd's PersistentPreRunE,
+		// but relying on that for correctness here would make a future
+		// caller of FormatAllBlocks from a JSON path silently leak escapes
+		// into the stream. GetBlockContentPlain closes the gap.
+		content := GetBlockContentPlain(block)
 		if len(content) > 50 {
 			content = content[:47] + "..."
 		}
