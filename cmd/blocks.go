@@ -39,7 +39,7 @@ not just to-do items. Supported block types:
 Layout / structural types (table, table_row, synced_block, column_list,
 column) are surfaced by ` + "`blocks list`" + ` but cannot be created through
 ` + "`blocks add`" + ` — they require children or references and will be
-addable once JSON-payload input lands.
+addable via a JSON-payload command in a future release.
 
 Examples:
   notioncli blocks list              # List all blocks
@@ -167,7 +167,7 @@ Examples:
 		}
 
 		if !utils.IsAddableBlockType(blockType) {
-			err := fmt.Errorf("block type %q cannot be created via `blocks add` (needs children or a reference); use a JSON-payload path once --json-input lands", blockType)
+			err := fmt.Errorf("block type %q cannot be created via `blocks add` (needs children or a reference); use a JSON-payload command in a future release", blockType)
 			if globalJSON {
 				return jsonErrorOr(cmd, err)
 			}
@@ -299,6 +299,6 @@ func init() {
 	blocksAddCmd.Flags().StringVarP(&blockType, "type", "t", "paragraph", "Block type to add")
 	blocksAddCmd.Flags().StringVar(&blockURL, "url", "", "URL for image/file/video/embed/bookmark blocks (overrides positional text)")
 	blocksAddCmd.Flags().StringVar(&blockCaption, "caption", "", "Optional caption for image/file/video/embed/bookmark blocks")
-	blocksAddCmd.Flags().StringVar(&blockFileID, "file-upload-id", "", "Notion file_upload id for image/file/video blocks (see files upload)")
+	blocksAddCmd.Flags().StringVar(&blockFileID, "file-upload-id", "", "Notion file_upload id for image/file/video blocks (overrides --url and positional text when set; see files upload)")
 	blocksAddCmd.Flags().StringVar(&blockLanguage, "language", "plain text", "Language for code blocks")
 }
