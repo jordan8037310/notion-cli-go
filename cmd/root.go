@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 
+	"notioncli/utils"
+
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -24,7 +26,14 @@ var rootCmd = &cobra.Command{
 		  check <number> (mark a task done)
 		  uncheck <number> (mark a task as not done)
 		  delete <number> (permanently remove a task)
-		  help (get some help)`,
+		  help (get some help)
+
+		Targeting a page:
+		  Use --page <id|alias> on page-scoped commands to override the
+		  default. Aliases live in ~/.config/notioncli/pages.yaml and are
+		  managed with 'notioncli pages add-alias' and 'pages list-aliases'.
+		  When --page is absent, NOTION_PAGE_ID is still honored for back-
+		  compat. Resolution order: --page > NOTION_PAGE_ID > error.`,
 	// PersistentPreRunE fires for every subcommand. It normalises the
 	// --output=text|json alias into the boolean flag and turns off ANSI
 	// color output whenever JSON is on so downstream commands that still
@@ -90,9 +99,57 @@ func shouldSuppressBanner() bool {
 	return false
 }
 
+// globalPage backs the persistent --page flag on rootCmd. It holds either
+// a raw Notion page id or an alias name; resolvePageID translates aliases
+// via utils.AliasStore at invocation time, not at flag-parse time, so a
+// typo in an alias is reported by the specific command that needed it.
+var globalPage string
+
+// aliasStoreOverride is a test seam: if non-nil, resolvePageID uses it
+// instead of utils.DefaultAliasStore(). Production code leaves it nil so
+// the real ~/.config/notioncli/pages.yaml path is consulted.
+var aliasStoreOverride *utils.AliasStore
+
+// resolvePageID returns the page id a command should operate on. The
+// resolution order is fixed and documented in rootCmd.Long:
+//
+//  1. --page flag (literal id or alias). Aliases are resolved via
+//     utils.AliasStore; unknown aliases surface an error citing the name.
+//  2. NOTION_PAGE_ID environment variable (legacy, still supported).
+//  3. Error — neither source produced a page id.
+//
+// The helper itself does not touch the filesystem unless --page was given
+// and is non-uuid-shaped, so the NOTION_PAGE_ID-only path keeps its
+// original behaviour (no new I/O, no new error modes).
+func resolvePageID() (string, error) {
+	if globalPage != "" {
+		store := aliasStoreOverride
+		if store == nil {
+			s, err := utils.DefaultAliasStore()
+			if err != nil {
+				return "", fmt.Errorf("resolve --page: %w", err)
+			}
+			store = s
+		}
+		id, err := store.Resolve(globalPage)
+		if err != nil {
+			return "", fmt.Errorf("resolve --page: %w", err)
+		}
+		return id, nil
+	}
+	if env := os.Getenv("NOTION_PAGE_ID"); env != "" {
+		return env, nil
+	}
+	return "", fmt.Errorf("no target page: set --page <id|alias> or NOTION_PAGE_ID")
+}
+
 func init() {
 	// Persistent output flags. Every subcommand inherits these.
 	rootCmd.PersistentFlags().BoolVar(&globalJSON, "json", false, "Emit JSON/NDJSON to stdout (disables ANSI color)")
 	rootCmd.PersistentFlags().BoolVar(&globalPretty, "pretty", false, "Pretty-print JSON output (list commands emit a single indented JSON array; compact NDJSON is recommended for piping)")
 	rootCmd.PersistentFlags().StringVar(&globalOutput, "output", "", "Output format: text|json (alias for --json)")
+
+	// Persistent page-targeting flag. resolvePageID translates aliases
+	// lazily so unknown aliases surface at command run time, not here.
+	rootCmd.PersistentFlags().StringVar(&globalPage, "page", "", "page id or alias (overrides NOTION_PAGE_ID env var)")
 }

@@ -40,11 +40,14 @@ func SetAPIConfig() (string, string) {
 		fmt.Println("NOTION_API_KEY environment variable not found")
 		os.Exit(1)
 	}
-	pageID, ok := os.LookupEnv("NOTION_PAGE_ID")
-	if !ok {
-		fmt.Println("NOTION_PAGE_ID environment variable not found")
-		os.Exit(1)
-	}
+	// NOTION_PAGE_ID is no longer required at config-load time: the
+	// persistent --page flag on rootCmd can supply the target page via an
+	// alias or literal id. Callers that still want the env-var fallback
+	// should use the resolvePageID helper in cmd/root.go — it tries
+	// --page first, then NOTION_PAGE_ID, and only then errors out. Here
+	// we simply return whatever happens to be in the environment
+	// (possibly empty) so tests and non-page-scoped commands keep working.
+	pageID := os.Getenv("NOTION_PAGE_ID")
 	return notionAPIKey, pageID
 }
 

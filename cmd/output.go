@@ -168,4 +168,6 @@ func resetGlobalOutputFlags() {
 	globalJSON = false
 	globalPretty = false
 	globalOutput = ""
+	globalPage = ""
+	aliasStoreOverride = nil
 }
