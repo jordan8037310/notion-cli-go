@@ -6,6 +6,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,12 @@ var (
 	blockCaption  string
 	blockFileID   string
 	blockLanguage string
+	// blocksAddRichTextJSON backs the --rich-text-json flag on
+	// `blocks add`. When non-empty, the command reads the file, parses
+	// it via utils.ParseRichTextJSON, and dispatches through
+	// utils.AddRichTextBlock instead of the single-segment AddBlock
+	// path. Mutually exclusive with the positional text arg.
+	blocksAddRichTextJSON string
 )
 
 // blocksCmd represents the blocks command
@@ -138,6 +145,10 @@ blocks can reference an uploaded file via --file-upload-id instead.
 Layout / structural types (table, table_row, synced_block, column_list,
 column) require children or references and cannot be created here yet.
 
+Use --rich-text-json FILE to supply a Notion rich-text array (annotations,
+mentions, and inline equations preserved). Mutually exclusive with the
+positional text argument.
+
 Examples:
   notioncli blocks add "Hello world"           # Add paragraph
   notioncli blocks add "Section Title" -t heading_1
@@ -146,11 +157,21 @@ Examples:
   notioncli blocks add "https://example.com/pic.png" -t image
   notioncli blocks add "" -t image --file-upload-id abc-123
   notioncli blocks add "caption" -t bookmark --url https://example.com
-  notioncli blocks add "E=mc^2" -t equation`,
-	Args: cobra.MinimumNArgs(1),
+  notioncli blocks add "E=mc^2" -t equation
+  notioncli blocks add --rich-text-json spec.json -t paragraph`,
+	// Args enforcement is bespoke: either --rich-text-json FILE or a single
+	// positional text arg must be supplied, never both. cobra's built-in
+	// Args helpers don't model the "XOR" so we express it inline below.
+	Args: func(cmd *cobra.Command, args []string) error {
+		if blocksAddRichTextJSON != "" {
+			if len(args) > 0 {
+				return fmt.Errorf("--rich-text-json is mutually exclusive with a positional text argument")
+			}
+			return nil
+		}
+		return cobra.MinimumNArgs(1)(cmd, args)
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		text := args[0]
-
 		// Validate block type
 		if blockType == "" {
 			blockType = "paragraph"
@@ -181,6 +202,49 @@ Examples:
 			return jsonErrorOr(cmd, fmt.Errorf("blocks add: %w", err))
 		}
 
+		// Rich-text JSON path: read the file, parse, and dispatch
+		// through the multi-segment write API. Mutually exclusive with
+		// the positional text arg (enforced by Args func above).
+		if blocksAddRichTextJSON != "" {
+			raw, err := os.ReadFile(blocksAddRichTextJSON)
+			if err != nil {
+				wrapped := fmt.Errorf("blocks add: read --rich-text-json %q: %w", blocksAddRichTextJSON, err)
+				if globalJSON {
+					return jsonErrorOr(cmd, wrapped)
+				}
+				color.Red("Error: %v", wrapped)
+				return nil
+			}
+			rt, err := utils.ParseRichTextJSON(raw)
+			if err != nil {
+				wrapped := fmt.Errorf("blocks add: %w", err)
+				if globalJSON {
+					return jsonErrorOr(cmd, wrapped)
+				}
+				color.Red("Error: %v", wrapped)
+				return nil
+			}
+			if err := utils.AddRichTextBlock(notionAPIKey, pageID, blockType, rt); err != nil {
+				wrapped := fmt.Errorf("blocks add: %w", err)
+				if globalJSON {
+					return jsonErrorOr(cmd, wrapped)
+				}
+				color.Red("Error adding block: %v", err)
+				return nil
+			}
+			if globalJSON {
+				return emitOK(cmd.OutOrStdout(), map[string]interface{}{
+					"action":   "add",
+					"type":     blockType,
+					"segments": len(rt),
+				})
+			}
+			icon := utils.SupportedBlockTypes[blockType].Icon
+			color.Green("Added %s %s: %d rich-text segment(s)", icon, blockType, len(rt))
+			return nil
+		}
+
+		text := args[0]
 		opts := blocksAddOptions()
 
 		if err := utils.AddBlock(notionAPIKey, pageID, blockType, text, opts...); err != nil {
@@ -301,4 +365,6 @@ func init() {
 	blocksAddCmd.Flags().StringVar(&blockCaption, "caption", "", "Optional caption for image/file/video/embed/bookmark blocks")
 	blocksAddCmd.Flags().StringVar(&blockFileID, "file-upload-id", "", "Notion file_upload id for image/file/video blocks (overrides --url and positional text when set; see files upload)")
 	blocksAddCmd.Flags().StringVar(&blockLanguage, "language", "plain text", "Language for code blocks")
+	blocksAddCmd.Flags().StringVar(&blocksAddRichTextJSON, "rich-text-json", "",
+		"Path to a JSON file containing a Notion rich-text array (preserves annotations, mentions, equations)")
 }
