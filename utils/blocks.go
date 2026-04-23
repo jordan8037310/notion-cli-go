@@ -360,8 +360,8 @@ func buildAddBlockPayload(blockType, text string, cfg blockConfig) (map[string]i
 			return nil, fmt.Errorf("embed block requires a URL")
 		}
 		inner := map[string]interface{}{"url": url}
-		if cap := captionRichText(cfg.Caption); cap != nil {
-			inner["caption"] = cap
+		if captionRT := captionRichText(cfg.Caption); captionRT != nil {
+			inner["caption"] = captionRT
 		}
 		return map[string]interface{}{
 			"object": "block",
@@ -375,8 +375,8 @@ func buildAddBlockPayload(blockType, text string, cfg blockConfig) (map[string]i
 			return nil, fmt.Errorf("bookmark block requires a URL")
 		}
 		inner := map[string]interface{}{"url": url}
-		if cap := captionRichText(cfg.Caption); cap != nil {
-			inner["caption"] = cap
+		if captionRT := captionRichText(cfg.Caption); captionRT != nil {
+			inner["caption"] = captionRT
 		}
 		return map[string]interface{}{
 			"object":   "block",
@@ -436,8 +436,8 @@ func buildMediaBlock(blockType, text string, cfg blockConfig) (map[string]interf
 		inner["type"] = "external"
 		inner["external"] = map[string]interface{}{"url": url}
 	}
-	if cap := captionRichText(cfg.Caption); cap != nil {
-		inner["caption"] = cap
+	if captionRT := captionRichText(cfg.Caption); captionRT != nil {
+		inner["caption"] = captionRT
 	}
 	return inner, nil
 }
