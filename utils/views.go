@@ -19,7 +19,7 @@ import (
 // currently pins. Issue #11 tracks the version bump that will enable a
 // real implementation; until then this client surfaces a typed error so
 // callers can check for it with errors.Is.
-var ErrViewsNotSupported = errors.New("views are not supported on Notion-Version " + NotionAPIVersion + "; will be enabled by issue #11")
+var ErrViewsNotSupported = fmt.Errorf("views are not supported on Notion-Version %s; will be enabled by issue #11", NotionAPIVersion)
 
 // ValidViewTypes is the closed set of view types accepted by
 // CreateViewRequest.Validate. It mirrors the MCP notion-create-view

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"notioncli/utils"
 
@@ -220,7 +221,9 @@ func init() {
 	viewsCmd.AddCommand(viewsUpdateCmd)
 
 	viewsCreateCmd.Flags().StringVar(&viewsCreateName, "name", "", "Display name for the new view (required)")
-	viewsCreateCmd.Flags().StringVar(&viewsCreateType, "type", "", "View type: table|board|list|gallery|calendar|timeline (required)")
+	// The suffix is generated from utils.ValidViewTypes so the help
+	// text can't drift from the validator's accepted set.
+	viewsCreateCmd.Flags().StringVar(&viewsCreateType, "type", "", "View type: "+strings.Join(utils.ValidViewTypes, "|")+" (required)")
 	viewsCreateCmd.Flags().StringVar(&viewsCreateConfigFile, "config-json", "", "Path to a JSON file with extra view configuration")
 
 	viewsUpdateCmd.Flags().StringVar(&viewsUpdateName, "name", "", "New display name for the view")

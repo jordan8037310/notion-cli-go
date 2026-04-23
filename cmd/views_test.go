@@ -38,6 +38,22 @@ func findViewsSubcommand(t *testing.T, name string) *cobra.Command {
 	return nil
 }
 
+// TestViews_CreateTypeFlagHelpFromValidViewTypes asserts the --type
+// flag's help text lists every value in utils.ValidViewTypes so the
+// help can't drift if the validator's accepted set changes.
+func TestViews_CreateTypeFlagHelpFromValidViewTypes(t *testing.T) {
+	sub := findViewsSubcommand(t, "create")
+	typeFlag := sub.Flags().Lookup("type")
+	if typeFlag == nil {
+		t.Fatal("--type flag not registered on views create")
+	}
+	for _, vt := range utils.ValidViewTypes {
+		if !strings.Contains(typeFlag.Usage, vt) {
+			t.Errorf("--type help %q missing ValidViewTypes entry %q", typeFlag.Usage, vt)
+		}
+	}
+}
+
 // TestViews_CmdRegistered verifies `views` is a top-level command with
 // `create` and `update` subcommands.
 func TestViews_CmdRegistered(t *testing.T) {
