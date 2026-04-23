@@ -148,12 +148,18 @@ type BlockList struct {
 	DeveloperSurvey string   `json:"developer_survey"`
 }
 
-// defaultBlockClient returns a BlockClient bound to the default client, but
-// reconfigured to the latest baseURL / apiKey so existing top-level calls
-// that take apiKey arguments keep working.
+// defaultBlockClient returns a BlockClient configured with the caller's
+// apiKey and the current package-level baseURL.
+//
+// A fresh *Client is allocated on every call rather than cached as a
+// package-level singleton, and that is intentional for now: the legacy
+// top-level entry points accept apiKey per call, and baseURL is mutable
+// via SetBaseURL (tests today, prod after PR #16). Caching without
+// reconciling both of those would either break httptest wiring or silently
+// mix credentials across calls. Once #16 lands and SetBaseURL is promoted
+// to a proper Client option, this can collapse to a sync.Once-guarded
+// singleton. Tracked alongside the #1 follow-ups.
 func defaultBlockClient(apiKey string) *BlockClient {
-	// Clone the default client with a per-call apiKey; baseURL follows the
-	// package-level variable so SetBaseURL continues to redirect tests.
 	return NewBlockClient(NewClient(apiKey, WithBaseURL(baseURL)))
 }
 
