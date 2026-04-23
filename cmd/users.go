@@ -8,7 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 
 	"notioncli/utils"
 
@@ -147,16 +147,11 @@ func formatUser(u utils.User) string {
 
 // writeJSON encodes v as indented JSON to w. Broken out so the users
 // subcommands share a single encoder configuration.
-func writeJSON(w interface{ Write(p []byte) (n int, err error) }, v interface{}) error {
+func writeJSON(w io.Writer, v interface{}) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
 }
-
-// Ensure os is referenced even if osExit is unused in this file's test
-// configuration; keeps godoc-importable tools happy without an import
-// side-effect.
-var _ = os.Stdout
 
 func init() {
 	rootCmd.AddCommand(usersCmd)
