@@ -254,38 +254,66 @@ func (b *BlockClient) FormatAllBlocks(ctx context.Context, pageID string, localT
 	return formatted, typeCounts, nil
 }
 
+// blockConfig holds the optional parameters used by AddBlock when building
+// block payloads. Fields only matter for the types that reference them —
+// e.g. Caption is ignored for paragraph/heading blocks.
+type blockConfig struct {
+	URL      string
+	Caption  string
+	FileID   string // Notion file_upload id; when set, media blocks use "file_upload" instead of "external".
+	Language string
+}
+
+// BlockOption mutates a blockConfig. Exposed as functional options so callers
+// can pass arbitrary combinations of URL, caption, file-upload id, and
+// language without growing AddBlock's positional parameter list.
+type BlockOption func(*blockConfig)
+
+// WithURL sets the external URL used by image/file/video/embed/bookmark
+// blocks. Overrides the positional text argument when non-empty.
+func WithURL(u string) BlockOption {
+	return func(c *blockConfig) { c.URL = u }
+}
+
+// WithCaption attaches a plain-text caption to media and bookmark blocks.
+func WithCaption(s string) BlockOption {
+	return func(c *blockConfig) { c.Caption = s }
+}
+
+// WithFileUploadID turns a media block into the "file_upload" variant,
+// referencing a previously-uploaded file by id (see utils.FileClient.Upload).
+// When set, any WithURL value is ignored.
+func WithFileUploadID(id string) BlockOption {
+	return func(c *blockConfig) { c.FileID = id }
+}
+
+// WithLanguage sets the language on a code block. Defaults to "plain text"
+// when not supplied.
+func WithLanguage(lang string) BlockOption {
+	return func(c *blockConfig) { c.Language = lang }
+}
+
 // AddBlock appends a block of the given type to the given page. Pass the
-// block's text for rich-text types; text is ignored for the divider block.
-func (b *BlockClient) AddBlock(ctx context.Context, pageID, blockType, text string) error {
+// block's text for rich-text types; text is the URL for media/embed/bookmark
+// blocks and the LaTeX expression for equation blocks. Optional behaviour
+// (file_upload id, captions, language) is supplied via BlockOption values.
+// Text is ignored for the divider block.
+func (b *BlockClient) AddBlock(ctx context.Context, pageID, blockType, text string, opts ...BlockOption) error {
 	if !IsValidBlockType(blockType) {
 		return fmt.Errorf("unsupported block type: %s", blockType)
 	}
+	if !IsAddableBlockType(blockType) {
+		return fmt.Errorf("block type %q is not addable via `blocks add`; use a JSON-payload path once --json-input lands", blockType)
+	}
 
-	var blockContent map[string]interface{}
-	if blockType == "divider" {
-		blockContent = map[string]interface{}{
-			"object":  "block",
-			"type":    "divider",
-			"divider": map[string]interface{}{},
-		}
-	} else {
-		richText := []map[string]interface{}{
-			{
-				"type": "text",
-				"text": map[string]interface{}{
-					"content": text,
-				},
-			},
-		}
-		innerContent := map[string]interface{}{"rich_text": richText}
-		if blockType == "code" {
-			innerContent["language"] = "plain text"
-		}
-		blockContent = map[string]interface{}{
-			"object":  "block",
-			"type":    blockType,
-			blockType: innerContent,
-		}
+	cfg := blockConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	blockContent, err := buildAddBlockPayload(blockType, text, cfg)
+	if err != nil {
+		return err
 	}
 
 	body := map[string]interface{}{
@@ -300,6 +328,143 @@ func (b *BlockClient) AddBlock(ctx context.Context, pageID, blockType, text stri
 		return err
 	}
 	return expectStatus(resp, http.StatusOK)
+}
+
+// buildAddBlockPayload returns the per-type JSON envelope for the Notion
+// `PATCH /blocks/{id}/children` endpoint. Split out of AddBlock so it can be
+// unit-tested without an HTTP round-trip and so each new type maps to a
+// single self-contained case block.
+func buildAddBlockPayload(blockType, text string, cfg blockConfig) (map[string]interface{}, error) {
+	switch blockType {
+	case "divider":
+		return map[string]interface{}{
+			"object":  "block",
+			"type":    "divider",
+			"divider": map[string]interface{}{},
+		}, nil
+
+	case "image", "file", "video":
+		inner, err := buildMediaBlock(blockType, text, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"object":  "block",
+			"type":    blockType,
+			blockType: inner,
+		}, nil
+
+	case "embed":
+		url := mediaURL(text, cfg)
+		if url == "" {
+			return nil, fmt.Errorf("embed block requires a URL")
+		}
+		inner := map[string]interface{}{"url": url}
+		if cap := captionRichText(cfg.Caption); cap != nil {
+			inner["caption"] = cap
+		}
+		return map[string]interface{}{
+			"object": "block",
+			"type":   "embed",
+			"embed":  inner,
+		}, nil
+
+	case "bookmark":
+		url := mediaURL(text, cfg)
+		if url == "" {
+			return nil, fmt.Errorf("bookmark block requires a URL")
+		}
+		inner := map[string]interface{}{"url": url}
+		if cap := captionRichText(cfg.Caption); cap != nil {
+			inner["caption"] = cap
+		}
+		return map[string]interface{}{
+			"object":   "block",
+			"type":     "bookmark",
+			"bookmark": inner,
+		}, nil
+
+	case "equation":
+		if text == "" {
+			return nil, fmt.Errorf("equation block requires an expression")
+		}
+		return map[string]interface{}{
+			"object":   "block",
+			"type":     "equation",
+			"equation": map[string]interface{}{"expression": text},
+		}, nil
+
+	default:
+		// Rich-text family: paragraph, heading_1..3, bulleted/numbered,
+		// to_do, toggle, quote, callout, code.
+		richText := []map[string]interface{}{
+			{
+				"type": "text",
+				"text": map[string]interface{}{"content": text},
+			},
+		}
+		innerContent := map[string]interface{}{"rich_text": richText}
+		if blockType == "code" {
+			lang := cfg.Language
+			if lang == "" {
+				lang = "plain text"
+			}
+			innerContent["language"] = lang
+		}
+		return map[string]interface{}{
+			"object":  "block",
+			"type":    blockType,
+			blockType: innerContent,
+		}, nil
+	}
+}
+
+// buildMediaBlock returns the inner envelope for an image/file/video block.
+// When the caller supplied a file-upload id, the block uses the "file_upload"
+// variant; otherwise it falls back to "external" with the URL taken from
+// WithURL (preferred) or the positional text argument.
+func buildMediaBlock(blockType, text string, cfg blockConfig) (map[string]interface{}, error) {
+	inner := map[string]interface{}{}
+	if cfg.FileID != "" {
+		inner["type"] = "file_upload"
+		inner["file_upload"] = map[string]interface{}{"id": cfg.FileID}
+	} else {
+		url := mediaURL(text, cfg)
+		if url == "" {
+			return nil, fmt.Errorf("%s block requires a URL or a file upload id", blockType)
+		}
+		inner["type"] = "external"
+		inner["external"] = map[string]interface{}{"url": url}
+	}
+	if cap := captionRichText(cfg.Caption); cap != nil {
+		inner["caption"] = cap
+	}
+	return inner, nil
+}
+
+// mediaURL picks the URL from WithURL when set, otherwise from the positional
+// text argument. Keeps `blocks add https://pic.png -t image` working while
+// still honouring `--url` on the cmd layer.
+func mediaURL(text string, cfg blockConfig) string {
+	if cfg.URL != "" {
+		return cfg.URL
+	}
+	return text
+}
+
+// captionRichText wraps a plain-text caption in the rich-text array shape the
+// Notion API expects on media/embed/bookmark blocks. An empty string yields
+// nil so the caption key stays absent from the payload.
+func captionRichText(s string) []map[string]interface{} {
+	if s == "" {
+		return nil
+	}
+	return []map[string]interface{}{
+		{
+			"type": "text",
+			"text": map[string]interface{}{"content": s},
+		},
+	}
 }
 
 // DeleteBlock removes the block at the given 1-based index across the full
