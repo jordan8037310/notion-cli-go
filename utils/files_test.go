@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -114,8 +113,8 @@ func TestNewFileClient(t *testing.T) {
 	}
 }
 
-// TestNewFileRef pins the constructor's contract.
-func TestNewFileRef(t *testing.T) {
+// TestFiles_NewFileRef pins the constructor's contract.
+func TestFiles_NewFileRef(t *testing.T) {
 	got := NewFileRef("abc-123", "hello.png")
 	if got == nil {
 		t.Fatal("NewFileRef: got nil")
@@ -155,9 +154,9 @@ func writeTempFile(t *testing.T, size int64) string {
 	return path
 }
 
-// TestUpload_HappyPath exercises the full two-step flow and verifies
+// TestFiles_Upload_HappyPath exercises the full two-step flow and verifies
 // the returned FileRef plus the bytes the server observed.
-func TestUpload_HappyPath(t *testing.T) {
+func TestFiles_Upload_HappyPath(t *testing.T) {
 	api := &fakeNotionFileAPI{}
 	srv := httptest.NewServer(api.handler(t))
 	defer srv.Close()
@@ -388,6 +387,4 @@ func TestFiles_PutMultipart_Headers(t *testing.T) {
 	if gotVersion != NotionAPIVersion {
 		t.Errorf("Notion-Version = %q; want %q", gotVersion, NotionAPIVersion)
 	}
-	// Exercise multipart import for the linter.
-	_ = multipart.NewWriter(nil)
 }

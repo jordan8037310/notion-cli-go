@@ -22,10 +22,11 @@ func newTeamsMock(t *testing.T) *httptest.Server {
 	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/teams" {
-			// Assert Notion-Version header is propagated so the
-			// real endpoint is being addressed.
-			if r.Header.Get("Notion-Version") == "" {
-				http.Error(w, `{"object":"error","code":"missing_version"}`, http.StatusBadRequest)
+			// Pin Notion-Version to the package constant so any future
+			// drift between the client and this test fails loudly here
+			// instead of silently slipping through CI.
+			if got := r.Header.Get("Notion-Version"); got != NotionAPIVersion {
+				http.Error(w, `{"object":"error","code":"wrong_version"}`, http.StatusBadRequest)
 				return
 			}
 			cursor := r.URL.Query().Get("start_cursor")

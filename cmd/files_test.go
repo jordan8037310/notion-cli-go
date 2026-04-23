@@ -118,8 +118,8 @@ func TestFiles_Cmd_DispatchHappyPath(t *testing.T) {
 		{"blocks add-image", []string{"blocks", "add-image", filePath}, "Uploaded image"},
 		{"blocks add-file", []string{"blocks", "add-file", filePath}, "Uploaded file"},
 		{"blocks add-file with --name", []string{"blocks", "add-file", filePath, "--name", "nice-name.txt"}, "nice-name.txt"},
-		{"pages set-icon", []string{"pages", "set-icon", "page-abc", filePath}, "Set icon on page"},
-		{"pages set-cover", []string{"pages", "set-cover", "page-abc", filePath}, "Set cover on page"},
+		{"pages set-icon", []string{"pages", "set-icon", "page-abc", filePath}, "Uploaded icon for page"},
+		{"pages set-cover", []string{"pages", "set-cover", "page-abc", filePath}, "Uploaded cover for page"},
 	}
 
 	for _, tt := range tests {
