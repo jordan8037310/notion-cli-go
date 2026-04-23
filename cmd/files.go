@@ -86,7 +86,18 @@ returns the file id and name only.`,
 			name = ref.Name
 		}
 		if globalJSON {
-			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), ref))
+			// Emit an action envelope so the caller's --name is visible
+			// in the JSON stream. ref itself is nested so consumers can
+			// still pick the raw upload response off it; `name` on the
+			// envelope is the name the caller asked for (the value
+			// displayed in Notion), which can differ from ref.Name when
+			// --name overrides it.
+			return jsonErrorOr(cmd, emitOK(cmd.OutOrStdout(), map[string]interface{}{
+				"action": "add-file",
+				"id":     ref.ID,
+				"name":   name,
+				"ref":    ref,
+			}))
 		}
 		color.Green("Uploaded file %s (id=%s) — block append deferred", name, ref.ID)
 		return nil

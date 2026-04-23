@@ -823,7 +823,9 @@ func TestViews_Create_JSON(t *testing.T) {
 }
 
 // TestFiles_AddFile_JSON drives `blocks add-file <path> --json` against
-// the existing file-upload mock (two-step in cmdMockServer).
+// the existing file-upload mock (two-step in cmdMockServer) and asserts
+// the envelope shape: {"ok":true, "action":"add-file", "id":"...",
+// "name":"<basename>", "ref":{...}}.
 func TestFiles_AddFile_JSON(t *testing.T) {
 	srv := withCmdEnv(t)
 	_ = srv
@@ -845,10 +847,53 @@ func TestFiles_AddFile_JSON(t *testing.T) {
 	assertNoANSI(t, out.String())
 	objs := assertNDJSON(t, out.String())
 	if len(objs) != 1 {
-		t.Fatalf("want 1 fileref, got %d: %q", len(objs), out.String())
+		t.Fatalf("want 1 envelope, got %d: %q", len(objs), out.String())
 	}
-	if id, _ := objs[0]["id"].(string); id == "" {
-		t.Errorf("file ref missing id: %v", objs[0])
+	env := objs[0]
+	if env["ok"] != true {
+		t.Errorf("ok = %v, want true", env["ok"])
+	}
+	if env["action"] != "add-file" {
+		t.Errorf("action = %v, want add-file", env["action"])
+	}
+	if id, _ := env["id"].(string); id == "" {
+		t.Errorf("envelope missing id: %v", env)
+	}
+	// Without --name, name falls back to the upload ref's name.
+	if name, _ := env["name"].(string); name == "" {
+		t.Errorf("envelope missing name: %v", env)
+	}
+	if _, ok := env["ref"].(map[string]interface{}); !ok {
+		t.Errorf("envelope missing ref object: %v", env)
+	}
+}
+
+// TestFiles_AddFile_JSON_NameOverride verifies --name is surfaced in
+// the JSON envelope so callers can correlate the name they asked for
+// with the upload result. Addresses PR #28 reviewer's ask that --name
+// be visible in JSON output.
+func TestFiles_AddFile_JSON_NameOverride(t *testing.T) {
+	_ = withCmdEnv(t)
+	tmp := t.TempDir() + "/hello.txt"
+	if err := writeTestFile(tmp, "hello"); err != nil {
+		t.Fatalf("writeTestFile: %v", err)
+	}
+	resetGlobalOutputFlags()
+	blocksAddFileName = ""
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "add-file", tmp, "--name", "display-name.txt", "--json"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	objs := assertNDJSON(t, out.String())
+	if len(objs) != 1 {
+		t.Fatalf("want 1 envelope, got %d: %q", len(objs), out.String())
+	}
+	if got := objs[0]["name"]; got != "display-name.txt" {
+		t.Errorf("name = %v, want display-name.txt (envelope=%v)", got, objs[0])
 	}
 }
 
