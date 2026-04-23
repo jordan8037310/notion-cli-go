@@ -1,13 +1,19 @@
+// Tests in this package must not call t.Parallel(): several helpers mutate
+// package-level state (utils.baseURL, blockType, cwd) that cannot safely be
+// shared across concurrent sub-tests. Running serially is the explicit design.
 package cmd
 
 import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"notioncli/utils"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"notioncli/utils"
+
+	"github.com/spf13/cobra"
 )
 
 // cmdMockServer returns an httptest.Server that answers every Notion endpoint
@@ -106,13 +112,14 @@ func cmdMockServer(t *testing.T) *httptest.Server {
 func withCmdEnv(t *testing.T) *httptest.Server {
 	t.Helper()
 
-	// 1. Mock server + redirect utils package baseURL.
+	// 1. Mock server + redirect utils package baseURL. Snapshot the prior
+	// value so a later test running in the same process without going
+	// through withCmdEnv doesn't inherit a pointer to a closed server.
 	srv := cmdMockServer(t)
+	priorBaseURL := utils.GetBaseURL()
 	utils.SetBaseURL(srv.URL)
 	t.Cleanup(func() {
-		// Restore to something harmless. The utils package default would be
-		// https://api.notion.com/v1 but we don't export it; pointing at the
-		// (now-closed) mock server URL is safe because no further calls run.
+		utils.SetBaseURL(priorBaseURL)
 		srv.Close()
 	})
 
@@ -142,7 +149,20 @@ func withCmdEnv(t *testing.T) *httptest.Server {
 
 // resetRootCmdArgs clears any args previously set on rootCmd. cobra retains
 // args across calls, so tests that share rootCmd must reset between runs.
-func resetRootCmdArgs(t *testing.T) {
-	t.Helper()
+func resetRootCmdArgs() {
 	rootCmd.SetArgs(nil)
+}
+
+// findTopLevelCmd returns the rootCmd child with the given Name, or fails
+// the test. Used by command-specific test files to locate the real *cobra.Command
+// instance without duplicating the linear scan across files.
+func findTopLevelCmd(t *testing.T, name string) *cobra.Command {
+	t.Helper()
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == name {
+			return c
+		}
+	}
+	t.Fatalf("%q command not registered on rootCmd", name)
+	return nil
 }

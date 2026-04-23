@@ -51,7 +51,7 @@ func TestListCmdDispatch(t *testing.T) {
 		origHandler.ServeHTTP(w, r)
 	})
 
-	resetRootCmdArgs(t)
+	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)

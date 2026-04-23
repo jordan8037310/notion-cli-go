@@ -6,24 +6,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/spf13/cobra"
 )
 
 // TestCheckCmdArgsAndFlags asserts that `check` requires exactly one
 // positional arg, and that the declared `--order` flag exists with its
 // default of 0.
 func TestCheckCmdArgsAndFlags(t *testing.T) {
-	var c *cobra.Command
-	for _, cc := range rootCmd.Commands() {
-		if cc.Name() == "check" {
-			c = cc
-			break
-		}
-	}
-	if c == nil {
-		t.Fatal("check command not registered on rootCmd")
-	}
+	c := findTopLevelCmd(t, "check")
 
 	// Args validation.
 	cases := []struct {
@@ -74,7 +63,7 @@ func TestCheckCmdDispatch(t *testing.T) {
 		origHandler.ServeHTTP(w, r)
 	})
 
-	resetRootCmdArgs(t)
+	resetRootCmdArgs()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
