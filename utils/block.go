@@ -19,8 +19,20 @@ var baseURL = "https://api.notion.com/v1"
 // SetBaseURL redirects the Notion API client to an arbitrary URL. Intended
 // for tests (especially the cmd/ layer, which cannot reach test-only symbols
 // defined in utils/*_test.go). Production callers should not use this.
+//
+// Deprecated: use WithBaseURL on Client — this exists only for legacy
+// cmd-layer tests and will be removed after #17 lands.
 func SetBaseURL(url string) {
 	baseURL = url
+}
+
+// GetBaseURL returns the current Notion API base URL. Exposed only so tests
+// can snapshot and restore the value around SetBaseURL calls.
+//
+// Deprecated: use WithBaseURL on Client — this exists only for legacy
+// cmd-layer tests and will be removed after #17 lands.
+func GetBaseURL() string {
+	return baseURL
 }
 
 // BlockTypeInfo contains display information for a block type

@@ -7,3 +7,4 @@
 #
 # Legitimate skips (test-only helpers exported so tests across files can use them):
 utils.SetBaseURL
+utils.GetBaseURL
