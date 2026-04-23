@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"notioncli/utils"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -85,8 +87,20 @@ func TestTeamsListDispatch_SurfacesStubError(t *testing.T) {
 	}
 	t.Cleanup(func() { osExit = origExit })
 
-	resetRootCmdArgs()
+	// Swap fatih/color's package-level writers so color.Red's output is
+	// observable. Without this the sentinel error lands on os.Stderr and
+	// the #11 assertion below can't see it.
 	var out bytes.Buffer
+	origColorOut := color.Output
+	origColorErr := color.Error
+	color.Output = &out
+	color.Error = &out
+	t.Cleanup(func() {
+		color.Output = origColorOut
+		color.Error = origColorErr
+	})
+
+	resetRootCmdArgs()
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
 	rootCmd.SetArgs([]string{"teams", "list"})
@@ -99,6 +113,14 @@ func TestTeamsListDispatch_SurfacesStubError(t *testing.T) {
 	}
 	if code != 1 {
 		t.Errorf("teams list osExit code = %d, want 1", code)
+	}
+
+	// The stub error must bubble through the CLI surface so operators
+	// who grep for "#11" in the output land on the tracking issue. This
+	// also confirms the discarded-team return at cmd/teams.go isn't
+	// suppressing the sentinel before the color.Red call.
+	if got := out.String(); !strings.Contains(got, "#11") {
+		t.Errorf("teams list output missing #11 marker:\n%s", got)
 	}
 }
 

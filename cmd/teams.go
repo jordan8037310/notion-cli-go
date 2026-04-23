@@ -32,6 +32,9 @@ var teamsListCmd = &cobra.Command{
 		notionAPIKey, _ := utils.SetAPIConfig()
 		client := utils.NewTeamClient(utils.NewClient(notionAPIKey, utils.WithBaseURL(utils.GetBaseURL())))
 
+		// client.List currently always returns (nil, ErrTeamsNotSupported)
+		// on this branch; the discard of the first return is intentional
+		// and becomes load-bearing once issue #11 lands the real impl.
 		if _, err := client.List(context.Background()); err != nil {
 			color.Red("Error: %v", err)
 			osExit(1)
