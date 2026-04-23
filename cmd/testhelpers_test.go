@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"notioncli/utils"
@@ -72,6 +73,24 @@ func cmdMockServer(t *testing.T) *httptest.Server {
 				Results: []utils.Team{
 					{Object: "team", ID: "team-1", Name: "Marketing"},
 				},
+			})
+
+		// POST /data_sources/{id}/views: views create.
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/data_sources/") && strings.HasSuffix(r.URL.Path, "/views"):
+			writeJSON(w, utils.View{
+				Object: "view",
+				ID:     "view-created-id",
+				Name:   "n",
+				Type:   "table",
+			})
+
+		// PATCH /views/{id}: views update.
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/views/"):
+			writeJSON(w, utils.View{
+				Object: "view",
+				ID:     "view-updated-id",
+				Name:   "Renamed",
+				Type:   "table",
 			})
 
 		// GET children: default page has one to_do item.
