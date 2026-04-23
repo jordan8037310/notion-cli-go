@@ -75,20 +75,14 @@ func renderSegmentWithResolver(ctx context.Context, r *RichText, resolver PageTi
 	return applyAnnotations(raw, r.Annotations)
 }
 
-// segmentPayload returns the bare, unannotated content of a rich-text
-// run without consulting any resolver. Callers that want page-title
-// expansion should use segmentPayloadWithResolver. Kept as a thin
-// wrapper so non-rendering helpers (PlainRichText) can continue to work
-// without a context.
-func segmentPayload(r *RichText) string {
-	return segmentPayloadWithResolver(context.Background(), r, NoPageResolver{})
-}
-
-// segmentPayloadWithResolver is segmentPayload with page-mention title
-// resolution. For mentions it expands into a display marker; for
+// segmentPayloadWithResolver returns the bare, unannotated content of a
+// rich-text run, consulting the resolver for page-mention title
+// expansion. For mentions it expands into a display marker; for
 // equations it wraps in "$…$"; for everything else it uses PlainText
 // (or Text.Content as a fallback when PlainText is empty, which can
 // happen on inputs the caller constructed by hand for write paths).
+// Callers that do not need resolution can pass NoPageResolver{} and
+// context.Background().
 func segmentPayloadWithResolver(ctx context.Context, r *RichText, resolver PageTitleResolver) string {
 	// Mention — type discriminator selects the sub-shape.
 	if r.Type == "mention" && r.Mention != nil {
