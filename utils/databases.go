@@ -54,6 +54,11 @@ type Database struct {
 // CreateDatabaseRequest or UpdateDatabaseRequest. The Notion property type
 // surface is large and evolving, so the payload is left as a loose map for
 // now. Callers construct these from a --properties-json file.
+//
+// This is a type alias rather than a named type so godoc tooling surfaces
+// it as map[string]interface{} at call sites; keep the descriptive name in
+// struct fields and function signatures so intent is readable in context.
+// A typed property surface can land in a follow-up (see issue #11 envelope).
 type DatabaseProperty = map[string]interface{}
 
 // CreateDatabaseRequest is the body for POST /v1/databases. Parent.PageID is
