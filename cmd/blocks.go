@@ -16,7 +16,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var blockType string
+var (
+	blockType       string
+	blockURL        string
+	blockCaption    string
+	blockFileID     string
+	blockLanguage   string
+)
 
 // blocksCmd represents the blocks command
 var blocksCmd = &cobra.Command{
@@ -27,13 +33,22 @@ not just to-do items. Supported block types:
 
   paragraph, heading_1, heading_2, heading_3,
   bulleted_list_item, numbered_list_item, to_do,
-  toggle, quote, callout, divider, code
+  toggle, quote, callout, divider, code,
+  image, file, video, embed, bookmark, equation
+
+Layout / structural types (table, table_row, synced_block, column_list,
+column) are surfaced by ` + "`blocks list`" + ` but cannot be created through
+` + "`blocks add`" + ` — they require children or references and will be
+addable once JSON-payload input lands.
 
 Examples:
   notioncli blocks list              # List all blocks
   notioncli blocks list --type to_do # List only to-do blocks
   notioncli blocks add "Hello"       # Add a paragraph
   notioncli blocks add "Title" -t heading_1  # Add a heading
+  notioncli blocks add "https://example.com/pic.png" -t image
+  notioncli blocks add "caption" -t bookmark --url https://example.com
+  notioncli blocks add "E=mc^2" -t equation
   notioncli blocks delete 5          # Delete block at index 5`,
 }
 
@@ -113,13 +128,25 @@ var blocksAddCmd = &cobra.Command{
 Supported types:
   paragraph, heading_1, heading_2, heading_3,
   bulleted_list_item, numbered_list_item, to_do,
-  toggle, quote, callout, divider, code
+  toggle, quote, callout, divider, code,
+  image, file, video, embed, bookmark, equation
+
+Media (image/file/video) and URL (embed/bookmark) blocks read their URL from
+the positional text argument by default, or from --url when supplied. Media
+blocks can reference an uploaded file via --file-upload-id instead.
+
+Layout / structural types (table, table_row, synced_block, column_list,
+column) require children or references and cannot be created here yet.
 
 Examples:
   notioncli blocks add "Hello world"           # Add paragraph
   notioncli blocks add "Section Title" -t heading_1
   notioncli blocks add "" -t divider           # Add divider (no text needed)
-  notioncli blocks add "Buy milk" -t to_do`,
+  notioncli blocks add "Buy milk" -t to_do
+  notioncli blocks add "https://example.com/pic.png" -t image
+  notioncli blocks add "" -t image --file-upload-id abc-123
+  notioncli blocks add "caption" -t bookmark --url https://example.com
+  notioncli blocks add "E=mc^2" -t equation`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		text := args[0]
@@ -139,13 +166,24 @@ Examples:
 			return nil
 		}
 
+		if !utils.IsAddableBlockType(blockType) {
+			err := fmt.Errorf("block type %q cannot be created via `blocks add` (needs children or a reference); use a JSON-payload path once --json-input lands", blockType)
+			if globalJSON {
+				return jsonErrorOr(cmd, err)
+			}
+			color.Red("Error: %v", err)
+			return nil
+		}
+
 		notionAPIKey, _ := utils.SetAPIConfig()
 		pageID, err := resolvePageID()
 		if err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("blocks add: %w", err))
 		}
 
-		if err := utils.AddBlock(notionAPIKey, pageID, blockType, text); err != nil {
+		opts := blocksAddOptions()
+
+		if err := utils.AddBlock(notionAPIKey, pageID, blockType, text, opts...); err != nil {
 			if globalJSON {
 				return jsonErrorOr(cmd, fmt.Errorf("blocks add: %w", err))
 			}
@@ -154,11 +192,21 @@ Examples:
 		}
 
 		if globalJSON {
-			return emitOK(cmd.OutOrStdout(), map[string]interface{}{
+			payload := map[string]interface{}{
 				"action": "add",
 				"type":   blockType,
 				"text":   text,
-			})
+			}
+			if blockURL != "" {
+				payload["url"] = blockURL
+			}
+			if blockCaption != "" {
+				payload["caption"] = blockCaption
+			}
+			if blockFileID != "" {
+				payload["file_upload_id"] = blockFileID
+			}
+			return emitOK(cmd.OutOrStdout(), payload)
 		}
 
 		icon := utils.SupportedBlockTypes[blockType].Icon
@@ -169,6 +217,27 @@ Examples:
 		}
 		return nil
 	},
+}
+
+// blocksAddOptions translates the --url / --caption / --file-upload-id /
+// --language cmd-level flags into the utils.BlockOption slice consumed by
+// utils.AddBlock. Kept separate so the flag wiring is easy to extend and
+// trivial to unit-test in isolation.
+func blocksAddOptions() []utils.BlockOption {
+	var opts []utils.BlockOption
+	if blockURL != "" {
+		opts = append(opts, utils.WithURL(blockURL))
+	}
+	if blockCaption != "" {
+		opts = append(opts, utils.WithCaption(blockCaption))
+	}
+	if blockFileID != "" {
+		opts = append(opts, utils.WithFileUploadID(blockFileID))
+	}
+	if blockLanguage != "" {
+		opts = append(opts, utils.WithLanguage(blockLanguage))
+	}
+	return opts
 }
 
 // blocksDeleteCmd deletes a block by index
@@ -228,4 +297,8 @@ func init() {
 
 	// Flags for add command
 	blocksAddCmd.Flags().StringVarP(&blockType, "type", "t", "paragraph", "Block type to add")
+	blocksAddCmd.Flags().StringVar(&blockURL, "url", "", "URL for image/file/video/embed/bookmark blocks (overrides positional text)")
+	blocksAddCmd.Flags().StringVar(&blockCaption, "caption", "", "Optional caption for image/file/video/embed/bookmark blocks")
+	blocksAddCmd.Flags().StringVar(&blockFileID, "file-upload-id", "", "Notion file_upload id for image/file/video blocks (see files upload)")
+	blocksAddCmd.Flags().StringVar(&blockLanguage, "language", "", "Language for code blocks (default \"plain text\")")
 }
