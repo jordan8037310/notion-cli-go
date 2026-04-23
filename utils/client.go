@@ -18,6 +18,7 @@ import (
 //   - GET /v1/teams (workspace team listing)
 //   - POST /v1/data_sources/{id}/views (view create/update for database views)
 //   - POST /v1/file_uploads (two-step file upload flow)
+//
 // Older responses continue to decode through existing structs; the pre-existing
 // block, page, database, comment, search, and users endpoints are unchanged.
 const NotionAPIVersion = "2026-03-11"
