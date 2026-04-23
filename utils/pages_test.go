@@ -556,6 +556,40 @@ func TestPageClient_MissingAPIKey(t *testing.T) {
 	}
 }
 
+// TestDuplicate_SourceNotFound asserts that when the source page 404s, the
+// Duplicate call aborts BEFORE creating a destination page. The returned
+// error must wrap the underlying 404 so callers can classify it.
+func TestDuplicate_SourceNotFound(t *testing.T) {
+	m := newPagesMockServer(t)
+	m.notFound = true
+	pc := NewPageClient(m.client())
+
+	newPage, err := pc.Duplicate(context.Background(), "missingSrc", "parentID")
+	if err == nil {
+		t.Fatal("expected error when source page 404s, got nil")
+	}
+	if newPage != nil {
+		t.Errorf("expected nil page on error, got %+v", newPage)
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("expected error to mention 404, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "fetch source") {
+		t.Errorf("expected error to mention fetch source, got %q", err.Error())
+	}
+
+	// Critical: no POST /pages (no destination created) and no PATCH
+	// /blocks/*/children (no empty page orphaned).
+	for _, c := range m.callsSnapshot() {
+		if c.method == http.MethodPost && c.path == "/pages" {
+			t.Errorf("Duplicate must not POST /pages when source 404s (calls=%+v)", m.calls)
+		}
+		if c.method == http.MethodPatch && strings.HasSuffix(c.path, "/children") {
+			t.Errorf("Duplicate must not PATCH children when source 404s (calls=%+v)", m.calls)
+		}
+	}
+}
+
 func TestExtractTitle(t *testing.T) {
 	tests := []struct {
 		name string

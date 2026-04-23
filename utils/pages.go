@@ -288,20 +288,23 @@ func (p *PageClient) Duplicate(ctx context.Context, srcID, parentID string) (*Pa
 		return nil, fmt.Errorf("duplicate page: parent id is required")
 	}
 
+	// Fetch the source page first and surface any error (including 404)
+	// BEFORE creating the destination. Previous revisions swallowed this
+	// error and happily created an empty "Copy" page for a bogus srcID.
+	src, err := p.Get(ctx, srcID)
+	if err != nil {
+		return nil, fmt.Errorf("duplicate page: fetch source: %w", err)
+	}
+
 	bc := NewBlockClient(p.c)
 	blocks, err := bc.GetAllBlocks(ctx, srcID, "")
 	if err != nil {
 		return nil, fmt.Errorf("duplicate page: fetch children: %w", err)
 	}
 
-	// Best-effort title lookup. A failure here is non-fatal — fall back to
-	// "Copy" so Duplicate can still make progress against mocks and against
-	// pages whose title is hidden from this integration.
 	title := "Copy"
-	if src, err := p.Get(ctx, srcID); err == nil {
-		if t := extractTitle(src); t != "" {
-			title = t
-		}
+	if t := extractTitle(src); t != "" {
+		title = t
 	}
 
 	newPage, err := p.Create(ctx, CreatePageRequest{
