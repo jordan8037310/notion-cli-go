@@ -5,15 +5,14 @@
 package utils
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
 	"sort"
 	"time"
 )
 
+// baseURL is the legacy package-level base URL. It is kept as the source of
+// truth for the default Client so that SetBaseURL (used by tests) continues
+// to redirect every legacy top-level call. New code should build its own
+// *Client via NewClient and not reach for this variable.
 var baseURL = "https://api.notion.com/v1"
 
 // SetBaseURL redirects the Notion API client to an arbitrary URL. Intended
@@ -21,7 +20,8 @@ var baseURL = "https://api.notion.com/v1"
 // defined in utils/*_test.go). Production callers should not use this.
 //
 // Deprecated: use WithBaseURL on Client — this exists only for legacy
-// cmd-layer tests and will be removed after #17 lands.
+// cmd-layer tests and will be removed in a follow-up once cmd/ migrates
+// to NewClient(WithBaseURL(...)).
 func SetBaseURL(url string) {
 	baseURL = url
 }
@@ -30,18 +30,19 @@ func SetBaseURL(url string) {
 // can snapshot and restore the value around SetBaseURL calls.
 //
 // Deprecated: use WithBaseURL on Client — this exists only for legacy
-// cmd-layer tests and will be removed after #17 lands.
+// cmd-layer tests and will be removed in a follow-up once cmd/ migrates
+// to NewClient(WithBaseURL(...)).
 func GetBaseURL() string {
 	return baseURL
 }
 
-// BlockTypeInfo contains display information for a block type
+// BlockTypeInfo contains display information for a block type.
 type BlockTypeInfo struct {
 	Icon  string
 	Color string
 }
 
-// SupportedBlockTypes defines all supported block types with their display info
+// SupportedBlockTypes defines all supported block types with their display info.
 var SupportedBlockTypes = map[string]BlockTypeInfo{
 	"paragraph":          {Icon: "¶", Color: "white"},
 	"heading_1":          {Icon: "H1", Color: "cyan"},
@@ -57,7 +58,7 @@ var SupportedBlockTypes = map[string]BlockTypeInfo{
 	"code":               {Icon: "<>", Color: "blue"},
 }
 
-// GetSupportedBlockTypeNames returns a sorted list of supported block type names
+// GetSupportedBlockTypeNames returns a sorted list of supported block type names.
 func GetSupportedBlockTypeNames() []string {
 	names := make([]string, 0, len(SupportedBlockTypes))
 	for name := range SupportedBlockTypes {
@@ -67,19 +68,20 @@ func GetSupportedBlockTypeNames() []string {
 	return names
 }
 
-// IsValidBlockType checks if a block type is supported
+// IsValidBlockType checks if a block type is supported.
 func IsValidBlockType(blockType string) bool {
 	_, ok := SupportedBlockTypes[blockType]
 	return ok
 }
 
+// ToDo is the Notion to-do block body.
 type ToDo struct {
 	Checked  bool       `json:"checked"`
 	Color    string     `json:"color"`
 	RichText []RichText `json:"rich_text"`
 }
 
-// RichTextBlock represents a block with rich_text content
+// RichTextBlock represents a block with rich_text content.
 type RichTextBlock struct {
 	RichText []RichText `json:"rich_text"`
 	Color    string     `json:"color,omitempty"`
@@ -87,6 +89,7 @@ type RichTextBlock struct {
 	Checked  bool       `json:"checked,omitempty"`  // for to_do blocks
 }
 
+// RichText is a single rich-text run returned by the Notion API.
 type RichText struct {
 	Annotations Annotation  `json:"annotations"`
 	Href        interface{} `json:"href"`
@@ -95,6 +98,7 @@ type RichText struct {
 	Type        string      `json:"type"`
 }
 
+// Annotation captures the Notion text-run annotation flags.
 type Annotation struct {
 	Bold          bool   `json:"bold"`
 	Code          bool   `json:"code"`
@@ -104,11 +108,13 @@ type Annotation struct {
 	Underline     bool   `json:"underline"`
 }
 
+// Text is the text payload inside a RichText run.
 type Text struct {
 	Content string      `json:"content"`
 	Link    interface{} `json:"link"`
 }
 
+// Block is the Notion block envelope covering every supported block type.
 type Block struct {
 	Object           string         `json:"object"`
 	ID               string         `json:"id"`
@@ -130,6 +136,8 @@ type Block struct {
 	Divider          *struct{}      `json:"divider,omitempty"`
 }
 
+// BlockList is a single page of block results, as returned by
+// /blocks/{id}/children.
 type BlockList struct {
 	Object          string   `json:"object"`
 	Results         []Block  `json:"results"`
@@ -140,308 +148,94 @@ type BlockList struct {
 	DeveloperSurvey string   `json:"developer_survey"`
 }
 
+// defaultBlockClient returns a BlockClient bound to the default client, but
+// reconfigured to the latest baseURL / apiKey so existing top-level calls
+// that take apiKey arguments keep working.
+func defaultBlockClient(apiKey string) *BlockClient {
+	// Clone the default client with a per-call apiKey; baseURL follows the
+	// package-level variable so SetBaseURL continues to redirect tests.
+	return NewBlockClient(NewClient(apiKey, WithBaseURL(baseURL)))
+}
+
+// GetBlocks delegates to BlockClient.GetBlocks on a default client.
+//
+// Deprecated: new callers should build a *Client and *BlockClient via
+// NewClient/NewBlockClient and pass context.Context explicitly.
 func GetBlocks(notionAPIKey, pageID string) ([]Block, error) {
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", baseURL+"/blocks/"+pageID+"/children", nil)
-	if err != nil {
-		return nil, fmt.Errorf("error creating request: %v", err)
-	}
-
-	req.Header.Add("accept", "application/json")
-	req.Header.Add("Notion-Version", "2022-06-28")
-	req.Header.Set("Authorization", "Bearer "+notionAPIKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var blockList BlockList
-
-	err = json.NewDecoder(resp.Body).Decode(&blockList)
-	if err != nil {
-		return nil, err
-	}
-
-	var blocks []Block
-	for _, result := range blockList.Results {
-		if result.Object == "block" && result.ToDo != nil && len(result.ToDo.RichText) > 0 {
-			blocks = append(blocks, result)
-		}
-	}
-	return blocks, nil
+	return defaultBlockClient(notionAPIKey).GetBlocks(defaultCtx(), pageID)
 }
 
+// GetToDoBlocks delegates to BlockClient.GetToDoBlocks on a default client.
+//
+// Deprecated: prefer BlockClient.GetToDoBlocks.
 func GetToDoBlocks(notionAPIKey, blockID string, localTimezone *time.Location) ([]string, error) {
-	blocks, err := GetBlocks(notionAPIKey, blockID)
-	if err != nil {
-		return nil, err
-	}
-	var todoBlocks []string
-	for _, block := range blocks {
-		if block.ToDo != nil {
-			var checked string
-			if block.ToDo.Checked {
-				checked = "X"
-			} else {
-				checked = " "
-			}
-			lastEditedTime, err := time.Parse(time.RFC3339, block.LastEditedTime)
-			if err != nil {
-				return nil, err
-			}
-			truncatedTime := lastEditedTime.In(localTimezone).Truncate(time.Minute)
-
-			element := fmt.Sprintf("%d [%s] %s (%s)", len(todoBlocks)+1, checked, block.ToDo.RichText[0].PlainText, truncatedTime.Format("2006-01-02 15:04"))
-			todoBlocks = append(todoBlocks, element)
-		}
-	}
-
-	return todoBlocks, nil
+	return defaultBlockClient(notionAPIKey).GetToDoBlocks(defaultCtx(), blockID, localTimezone)
 }
 
+// AddNewToDoItem delegates to BlockClient.AddNewToDoItem on a default client.
+//
+// Deprecated: prefer BlockClient.AddNewToDoItem.
 func AddNewToDoItem(notionAPIKey, pageID, text string) error {
-	client := &http.Client{}
-	reqBody, err := json.Marshal(map[string]interface{}{
-		"children": []map[string]interface{}{
-			{
-				"object": "block",
-				"type":   "to_do",
-				"to_do": map[string]interface{}{
-					"rich_text": []map[string]interface{}{
-						{
-							"type": "text",
-							"text": map[string]interface{}{
-								"content": text,
-							},
-						},
-					},
-				},
-			},
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("error marshalling request body: %v", err)
-	}
-
-	req, err := http.NewRequest("PATCH", baseURL+"/blocks/"+pageID+"/children", bytes.NewBuffer(reqBody))
-	if err != nil {
-		return fmt.Errorf("error creating request: %v", err)
-	}
-
-	req.Header.Add("Content-Type", "application/json; charset=utf-8")
-	req.Header.Add("Notion-Version", "2022-06-28")
-	req.Header.Set("Authorization", "Bearer "+notionAPIKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status code: %d, message: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	return nil
+	return defaultBlockClient(notionAPIKey).AddNewToDoItem(defaultCtx(), pageID, text)
 }
 
+// GetBlockID delegates to BlockClient.GetBlockID on a default client.
+//
+// Deprecated: prefer BlockClient.GetBlockID.
 func GetBlockID(notionAPIKey, pageID string, order int) (string, error) {
-	if order < 1 {
-		return "", fmt.Errorf("order must be greater than 0")
-	}
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", baseURL+"/blocks/"+pageID+"/children", nil)
-	if err != nil {
-		return "", fmt.Errorf("error creating request: %v", err)
-	}
-
-	req.Header.Add("accept", "application/json")
-	req.Header.Add("Notion-Version", "2022-06-28")
-	req.Header.Set("Authorization", "Bearer "+notionAPIKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var blockList BlockList
-	err = json.NewDecoder(resp.Body).Decode(&blockList)
-	if err != nil {
-		return "", err
-	}
-
-	if order > len(blockList.Results) {
-		return "", fmt.Errorf("order number exceeds the number of blocks")
-	}
-
-	return blockList.Results[order-1].ID, nil
-
+	return defaultBlockClient(notionAPIKey).GetBlockID(defaultCtx(), pageID, order)
 }
 
+// MarkToDoBlockChecked delegates to BlockClient.MarkToDoBlockChecked on a default client.
+//
+// Deprecated: prefer BlockClient.MarkToDoBlockChecked.
 func MarkToDoBlockChecked(notionAPIKey, pageID string, order int) error {
-
-	blockID, err := GetBlockID(notionAPIKey, pageID, order)
-	if err != nil {
-		return err
-	}
-	client := &http.Client{}
-	reqBody, err := json.Marshal(map[string]interface{}{
-		"to_do": map[string]interface{}{
-			"checked": true,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("error marshalling request body: %v", err)
-	}
-
-	req, err := http.NewRequest("PATCH", baseURL+"/blocks/"+blockID, bytes.NewBuffer(reqBody))
-	if err != nil {
-		return fmt.Errorf("error creating request: %v", err)
-	}
-
-	req.Header.Add("Content-Type", "application/json; charset=utf-8")
-	req.Header.Add("Notion-Version", "2022-06-28")
-	req.Header.Set("Authorization", "Bearer "+notionAPIKey)
-
-	resp, err := client.Do(req)
-
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	return nil
+	return defaultBlockClient(notionAPIKey).MarkToDoBlockChecked(defaultCtx(), pageID, order)
 }
 
+// MarkToDoBlockUnChecked delegates to BlockClient.MarkToDoBlockUnChecked on a default client.
+//
+// Deprecated: prefer BlockClient.MarkToDoBlockUnChecked.
 func MarkToDoBlockUnChecked(notionAPIKey, pageID string, order int) error {
-
-	blockID, err := GetBlockID(notionAPIKey, pageID, order)
-	if err != nil {
-		return err
-	}
-	client := &http.Client{}
-	reqBody, err := json.Marshal(map[string]interface{}{
-		"to_do": map[string]interface{}{
-			"checked": false,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("error marshalling request body: %v", err)
-	}
-
-	req, err := http.NewRequest("PATCH", baseURL+"/blocks/"+blockID, bytes.NewBuffer(reqBody))
-	if err != nil {
-		return fmt.Errorf("error creating request: %v", err)
-	}
-
-	req.Header.Add("Content-Type", "application/json; charset=utf-8")
-	req.Header.Add("Notion-Version", "2022-06-28")
-	req.Header.Set("Authorization", "Bearer "+notionAPIKey)
-
-	resp, err := client.Do(req)
-
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	return nil
+	return defaultBlockClient(notionAPIKey).MarkToDoBlockUnChecked(defaultCtx(), pageID, order)
 }
 
+// DeleteToDoBlock delegates to BlockClient.DeleteToDoBlock on a default client.
+//
+// Deprecated: prefer BlockClient.DeleteToDoBlock.
 func DeleteToDoBlock(notionAPIKey, pageID string, order int) error {
-	blockID, err := GetBlockID(notionAPIKey, pageID, order)
-	if err != nil {
-		return err
-	}
-	client := &http.Client{}
-	req, err := http.NewRequest("DELETE", baseURL+"/blocks/"+blockID, nil)
-	if err != nil {
-		return fmt.Errorf("error creating request: %v", err)
-	}
-
-	req.Header.Add("Notion-Version", "2022-06-28")
-	req.Header.Add("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("Authorization", "Bearer "+notionAPIKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-	}
-
-	return nil
+	return defaultBlockClient(notionAPIKey).DeleteToDoBlock(defaultCtx(), pageID, order)
 }
 
-// GetAllBlocks retrieves all blocks under a page, optionally filtered by type
-// Handles pagination for pages with more than 100 blocks
+// GetAllBlocks delegates to BlockClient.GetAllBlocks on a default client.
+//
+// Deprecated: prefer BlockClient.GetAllBlocks.
 func GetAllBlocks(notionAPIKey, pageID string, filterType string) ([]Block, error) {
-	client := &http.Client{}
-	var result []Block
-	var cursor string
-
-	for {
-		url := baseURL + "/blocks/" + pageID + "/children"
-		if cursor != "" {
-			url += "?start_cursor=" + cursor
-		}
-
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("error creating request: %v", err)
-		}
-
-		req.Header.Add("accept", "application/json")
-		req.Header.Add("Notion-Version", "2022-06-28")
-		req.Header.Set("Authorization", "Bearer "+notionAPIKey)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, err
-		}
-
-		var blockList BlockList
-		err = json.NewDecoder(resp.Body).Decode(&blockList)
-		resp.Body.Close()
-		if err != nil {
-			return nil, err
-		}
-
-		for _, block := range blockList.Results {
-			if block.Object == "block" {
-				// If no filter or matches filter, include block
-				if filterType == "" || block.Type == filterType {
-					result = append(result, block)
-				}
-			}
-		}
-
-		// Check if there are more pages
-		if !blockList.HasMore || blockList.NextCursor == "" {
-			break
-		}
-		cursor = blockList.NextCursor
-	}
-
-	return result, nil
+	return defaultBlockClient(notionAPIKey).GetAllBlocks(defaultCtx(), pageID, filterType)
 }
 
-// GetBlockContent extracts text content from any block type
+// FormatAllBlocks delegates to BlockClient.FormatAllBlocks on a default client.
+//
+// Deprecated: prefer BlockClient.FormatAllBlocks.
+func FormatAllBlocks(notionAPIKey, pageID string, localTimezone *time.Location, filterType string) ([]string, map[string]int, error) {
+	return defaultBlockClient(notionAPIKey).FormatAllBlocks(defaultCtx(), pageID, localTimezone, filterType)
+}
+
+// AddBlock delegates to BlockClient.AddBlock on a default client.
+//
+// Deprecated: prefer BlockClient.AddBlock.
+func AddBlock(notionAPIKey, pageID, blockType, text string) error {
+	return defaultBlockClient(notionAPIKey).AddBlock(defaultCtx(), pageID, blockType, text)
+}
+
+// DeleteBlock delegates to BlockClient.DeleteBlock on a default client.
+//
+// Deprecated: prefer BlockClient.DeleteBlock.
+func DeleteBlock(notionAPIKey, pageID string, order int) error {
+	return defaultBlockClient(notionAPIKey).DeleteBlock(defaultCtx(), pageID, order)
+}
+
+// GetBlockContent extracts text content from any block type.
 func GetBlockContent(block Block) string {
 	switch block.Type {
 	case "divider":
@@ -494,167 +288,17 @@ func GetBlockContent(block Block) string {
 	return "(empty)"
 }
 
-// GetBlockIcon returns the display icon for a block
+// GetBlockIcon returns the display icon for a block.
 func GetBlockIcon(block Block) string {
-	// Special case for to_do: show checked/unchecked
+	// Special case for to_do: show checked/unchecked.
 	if block.Type == "to_do" && block.ToDo != nil {
 		if block.ToDo.Checked {
 			return "☑"
 		}
 		return "☐"
 	}
-
 	if info, ok := SupportedBlockTypes[block.Type]; ok {
 		return info.Icon
 	}
 	return "?"
-}
-
-// FormatAllBlocks returns formatted strings for all blocks
-func FormatAllBlocks(notionAPIKey, pageID string, localTimezone *time.Location, filterType string) ([]string, map[string]int, error) {
-	blocks, err := GetAllBlocks(notionAPIKey, pageID, filterType)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var formatted []string
-	typeCounts := make(map[string]int)
-
-	for index, block := range blocks {
-		lastEditedTime, err := time.Parse(time.RFC3339, block.LastEditedTime)
-		if err != nil {
-			return nil, nil, err
-		}
-		truncatedTime := lastEditedTime.In(localTimezone).Truncate(time.Minute)
-
-		icon := GetBlockIcon(block)
-		content := GetBlockContent(block)
-
-		// Truncate long content
-		if len(content) > 50 {
-			content = content[:47] + "..."
-		}
-
-		element := fmt.Sprintf("%4d %s  [%-20s] %s (%s)",
-			index+1,
-			icon,
-			block.Type,
-			content,
-			truncatedTime.Format("2006-01-02 15:04"))
-		formatted = append(formatted, element)
-		typeCounts[block.Type]++
-	}
-
-	return formatted, typeCounts, nil
-}
-
-// AddBlock adds a new block of any supported type
-func AddBlock(notionAPIKey, pageID, blockType, text string) error {
-	if !IsValidBlockType(blockType) {
-		return fmt.Errorf("unsupported block type: %s", blockType)
-	}
-
-	client := &http.Client{}
-
-	var blockContent map[string]interface{}
-
-	if blockType == "divider" {
-		blockContent = map[string]interface{}{
-			"object":  "block",
-			"type":    "divider",
-			"divider": map[string]interface{}{},
-		}
-	} else {
-		// Most blocks use rich_text
-		richText := []map[string]interface{}{
-			{
-				"type": "text",
-				"text": map[string]interface{}{
-					"content": text,
-				},
-			},
-		}
-
-		innerContent := map[string]interface{}{
-			"rich_text": richText,
-		}
-
-		// Add language for code blocks
-		if blockType == "code" {
-			innerContent["language"] = "plain text"
-		}
-
-		blockContent = map[string]interface{}{
-			"object":  "block",
-			"type":    blockType,
-			blockType: innerContent,
-		}
-	}
-
-	reqBody, err := json.Marshal(map[string]interface{}{
-		"children": []map[string]interface{}{blockContent},
-	})
-	if err != nil {
-		return fmt.Errorf("error marshalling request body: %v", err)
-	}
-
-	req, err := http.NewRequest("PATCH", baseURL+"/blocks/"+pageID+"/children", bytes.NewBuffer(reqBody))
-	if err != nil {
-		return fmt.Errorf("error creating request: %v", err)
-	}
-
-	req.Header.Add("Content-Type", "application/json; charset=utf-8")
-	req.Header.Add("Notion-Version", "2022-06-28")
-	req.Header.Set("Authorization", "Bearer "+notionAPIKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status code: %d, message: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	return nil
-}
-
-// DeleteBlock deletes any block by its index (1-based)
-func DeleteBlock(notionAPIKey, pageID string, order int) error {
-	// Get all blocks to find the one at the given index
-	blocks, err := GetAllBlocks(notionAPIKey, pageID, "")
-	if err != nil {
-		return err
-	}
-
-	if order < 1 || order > len(blocks) {
-		return fmt.Errorf("block number %d out of range (1-%d)", order, len(blocks))
-	}
-
-	blockID := blocks[order-1].ID
-
-	client := &http.Client{}
-	req, err := http.NewRequest("DELETE", baseURL+"/blocks/"+blockID, nil)
-	if err != nil {
-		return fmt.Errorf("error creating request: %v", err)
-	}
-
-	req.Header.Add("Notion-Version", "2022-06-28")
-	req.Header.Add("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("Authorization", "Bearer "+notionAPIKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status code: %d, message: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	return nil
 }
