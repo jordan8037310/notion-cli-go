@@ -80,7 +80,7 @@ func NewCommentClient(c *Client) *CommentClient {
 // pagination internally.
 func (cc *CommentClient) ListPage(ctx context.Context, blockID, cursor string) (*CommentList, error) {
 	if blockID == "" {
-		return nil, fmt.Errorf("block id is required")
+		return nil, fmt.Errorf("comments list: block id is required")
 	}
 	q := url.Values{}
 	q.Set("block_id", blockID)
@@ -109,7 +109,7 @@ func (cc *CommentClient) ListPage(ctx context.Context, blockID, cursor string) (
 // (not nil) when the target has no comments.
 func (cc *CommentClient) List(ctx context.Context, blockID string) ([]Comment, error) {
 	if blockID == "" {
-		return nil, fmt.Errorf("block id is required")
+		return nil, fmt.Errorf("comments list: block id is required")
 	}
 	var all []Comment
 	cursor := ""
