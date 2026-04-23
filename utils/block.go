@@ -136,12 +136,20 @@ type RichTextBlock struct {
 }
 
 // RichText is a single rich-text run returned by the Notion API.
+//
+// Notion rich-text arrays carry ordered "segments": each segment has its
+// own annotations (bold/italic/color/...) plus one of a handful of payload
+// shapes — plain text, a mention, or an inline equation. The struct below
+// models all three payload shapes as optional pointers so a given run
+// round-trips whichever one was set.
 type RichText struct {
-	Annotations Annotation  `json:"annotations"`
-	Href        interface{} `json:"href"`
-	PlainText   string      `json:"plain_text"`
-	Text        Text        `json:"text"`
-	Type        string      `json:"type"`
+	Annotations Annotation    `json:"annotations"`
+	Href        interface{}   `json:"href"`
+	PlainText   string        `json:"plain_text"`
+	Text        Text          `json:"text"`
+	Type        string        `json:"type"`
+	Mention     *Mention      `json:"mention,omitempty"`
+	Equation    *TextEquation `json:"equation,omitempty"`
 }
 
 // Annotation captures the Notion text-run annotation flags.
@@ -158,6 +166,44 @@ type Annotation struct {
 type Text struct {
 	Content string      `json:"content"`
 	Link    interface{} `json:"link"`
+}
+
+// TextEquation is an inline LaTeX equation payload carried by a rich-text
+// run whose Type is "equation". Mirrors the Notion payload shape
+// `{"expression":"E=mc^2"}`.
+type TextEquation struct {
+	Expression string `json:"expression"`
+}
+
+// Mention is the Notion mention payload carried by a rich-text run whose
+// Type is "mention". Exactly one of User / Page / Date / Database is
+// populated to match the mention's Type discriminator.
+type Mention struct {
+	Type     string           `json:"type"`
+	User     *User            `json:"user,omitempty"`
+	Page     *PageMention     `json:"page,omitempty"`
+	Date     *DateMention     `json:"date,omitempty"`
+	Database *DatabaseMention `json:"database,omitempty"`
+}
+
+// PageMention carries the referenced Notion page id for a page mention.
+// Notion does not include the page title inline; callers that want a
+// readable title must fetch the page separately.
+type PageMention struct {
+	ID string `json:"id"`
+}
+
+// DatabaseMention carries the referenced Notion database id for a
+// database mention.
+type DatabaseMention struct {
+	ID string `json:"id"`
+}
+
+// DateMention is the payload for a date mention. End is optional and
+// populated only when the user picked a range.
+type DateMention struct {
+	Start string `json:"start"`
+	End   string `json:"end,omitempty"`
 }
 
 // Block is the Notion block envelope covering every supported block type.
