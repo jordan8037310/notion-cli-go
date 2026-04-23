@@ -151,5 +151,5 @@ func init() {
 
 	// Persistent page-targeting flag. resolvePageID translates aliases
 	// lazily so unknown aliases surface at command run time, not here.
-	rootCmd.PersistentFlags().StringVar(&globalPage, "page", "", "page id or alias (overrides NOTION_PAGE_ID env var)")
+	rootCmd.PersistentFlags().StringVar(&globalPage, "page", "", "page id or alias; falls back to NOTION_PAGE_ID env var")
 }
