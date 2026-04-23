@@ -95,20 +95,36 @@ func TestBlockTypes_GetBlockContent(t *testing.T) {
 			want: "$E=mc^2$",
 		},
 		{
-			name: "table with header",
+			name: "table with column header only",
 			block: Block{
 				Type:  "table",
 				Table: &TableBlock{TableWidth: 3, HasColumnHeader: true},
 			},
-			want: "table (3 cols, yes header)",
+			want: "table (3 cols, yes col header, no row header)",
 		},
 		{
-			name: "table no header",
+			name: "table with no headers",
 			block: Block{
 				Type:  "table",
 				Table: &TableBlock{TableWidth: 2, HasColumnHeader: false},
 			},
-			want: "table (2 cols, no header)",
+			want: "table (2 cols, no col header, no row header)",
+		},
+		{
+			name: "table with both headers",
+			block: Block{
+				Type:  "table",
+				Table: &TableBlock{TableWidth: 4, HasColumnHeader: true, HasRowHeader: true},
+			},
+			want: "table (4 cols, yes col header, yes row header)",
+		},
+		{
+			name: "table with row header only",
+			block: Block{
+				Type:  "table",
+				Table: &TableBlock{TableWidth: 2, HasColumnHeader: false, HasRowHeader: true},
+			},
+			want: "table (2 cols, no col header, yes row header)",
 		},
 		{
 			name: "table_row",
