@@ -10,6 +10,8 @@ import (
 	"io"
 	"reflect"
 
+	"notioncli/utils"
+
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
@@ -161,6 +163,30 @@ func applyGlobalOutput() error {
 	return fmt.Errorf("invalid --output %q (want text|json)", globalOutput)
 }
 
+// buildPageResolver returns the PageTitleResolver appropriate for the
+// current invocation: a *utils.CachingPageResolver bound to a fresh
+// PageClient when --resolve-mentions is set, or utils.NoPageResolver
+// otherwise. The returned resolver is safe to discard after a single
+// render pass — its cache is intentionally per-invocation so stale
+// titles cannot leak across runs.
+//
+// A fresh *utils.Client is allocated per call rather than reused across
+// commands; this mirrors the legacy top-level helpers (GetAllBlocks,
+// FormatAllBlocks, ...) which also build a client per call. The overhead
+// is negligible next to the network round-trip the resolver then issues.
+//
+// JSON paths must not call this helper — mention resolution is a
+// human-output affordance only. See the --resolve-mentions flag
+// godoc on globalResolveMentions for the full rationale.
+func buildPageResolver(apiKey string) utils.PageTitleResolver {
+	if !globalResolveMentions {
+		return utils.NoPageResolver{}
+	}
+	return utils.NewCachingPageResolver(
+		utils.NewPageClient(utils.NewClient(apiKey, utils.WithBaseURL(utils.GetBaseURL()))),
+	)
+}
+
 // resetGlobalOutputFlags is used by tests to return to the default
 // state between runs. cobra retains bound flag values across the
 // process so this reset is required to keep tests hermetic.
@@ -169,6 +195,7 @@ func resetGlobalOutputFlags() {
 	globalPretty = false
 	globalOutput = ""
 	globalPage = ""
+	globalResolveMentions = false
 	// Intentionally do NOT reset aliasStoreOverride here: test helpers
 	// install it via aliasTestEnv(t) and depend on it surviving the call
 	// to resetRootCmdArgs(). t.Cleanup restores the prior value at test

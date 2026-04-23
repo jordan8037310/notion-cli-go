@@ -105,6 +105,19 @@ func shouldSuppressBanner() bool {
 // typo in an alias is reported by the specific command that needed it.
 var globalPage string
 
+// globalResolveMentions backs the persistent --resolve-mentions flag on
+// rootCmd. Default off. When true, mention-bearing commands (today:
+// blocks list, human-output path only) build a CachingPageResolver and
+// pass it into the rich-text renderer so "[page:<id>]" expands to
+// "[<title>]". One API call per unique page id per invocation —
+// see utils.CachingPageResolver for the caching contract.
+//
+// JSON output paths intentionally ignore this flag: expanding mentions
+// there would be lossy round-tripping (the original rich_text mention
+// shape is replaced by a bracketed string). This is a human-rendering
+// affordance only.
+var globalResolveMentions bool
+
 // aliasStoreOverride is a test seam: if non-nil, resolvePageID uses it
 // instead of utils.DefaultAliasStore(). Production code leaves it nil so
 // the real ~/.config/notioncli/pages.yaml path is consulted.
@@ -152,4 +165,12 @@ func init() {
 	// Persistent page-targeting flag. resolvePageID translates aliases
 	// lazily so unknown aliases surface at command run time, not here.
 	rootCmd.PersistentFlags().StringVar(&globalPage, "page", "", "page id or alias; falls back to NOTION_PAGE_ID env var")
+
+	// Opt-in page-mention resolution. Default off so the existing
+	// "[page:<id>]" rendering stays the baseline. When set, commands
+	// that surface rich text to humans build a CachingPageResolver
+	// (one API call per unique page id) and expand page mentions to
+	// "[<title>]". Ignored on --json paths.
+	rootCmd.PersistentFlags().BoolVar(&globalResolveMentions, "resolve-mentions", false,
+		"resolve page mentions from [page:<id>] to [<title>] (issues one API call per unique page; human output only)")
 }
