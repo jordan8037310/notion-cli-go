@@ -3,6 +3,7 @@ package utils
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -55,33 +56,10 @@ func TestTeamClient_ListPage_ReturnsNotSupported(t *testing.T) {
 // the tracking issue without reading the code.
 func TestErrTeamsNotSupported_MessageReferences11(t *testing.T) {
 	msg := ErrTeamsNotSupported.Error()
-	if !containsAll(msg, NotionAPIVersion, "#11") {
-		t.Errorf("ErrTeamsNotSupported message = %q; want it to mention %q and %q", msg, NotionAPIVersion, "#11")
+	if !strings.Contains(msg, NotionAPIVersion) {
+		t.Errorf("ErrTeamsNotSupported message = %q; want it to mention %q", msg, NotionAPIVersion)
 	}
-}
-
-func containsAll(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if !contains(s, sub) {
-			return false
-		}
+	if !strings.Contains(msg, "#11") {
+		t.Errorf("ErrTeamsNotSupported message = %q; want it to mention %q", msg, "#11")
 	}
-	return true
-}
-
-func contains(s, sub string) bool {
-	return len(sub) == 0 || indexOf(s, sub) >= 0
-}
-
-func indexOf(s, sub string) int {
-	n, m := len(s), len(sub)
-	if m > n {
-		return -1
-	}
-	for i := 0; i+m <= n; i++ {
-		if s[i:i+m] == sub {
-			return i
-		}
-	}
-	return -1
 }

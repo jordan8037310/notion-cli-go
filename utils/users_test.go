@@ -82,13 +82,6 @@ func newUserClient(srv *httptest.Server) *UserClient {
 	return NewUserClient(NewClient("test-key", WithBaseURL(srv.URL)))
 }
 
-// pagedUsersBaseURL lets a test request a specific fixture by appending
-// a synthetic ?page= query parameter that the mock server reads. This
-// is simpler than mutating WithBaseURL per-case.
-func pagedUsersBaseURL(srv *httptest.Server, page string) string {
-	return srv.URL + "?page=" + page
-}
-
 // TestList_Empty exercises the pagination-walk on an empty
 // workspace. The returned slice must be non-nil so downstream JSON
 // callers emit [] rather than null.
@@ -275,7 +268,3 @@ func TestMe_HTTPError(t *testing.T) {
 		t.Fatal("Me: want error on 401, got nil")
 	}
 }
-
-// Keep the unused helper referenced so go vet doesn't complain during
-// maintenance when a caller is removed.
-var _ = pagedUsersBaseURL
