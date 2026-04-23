@@ -14,7 +14,11 @@ var addCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		text := args[0]
-		notionAPIKey, pageID := utils.SetAPIConfig()
+		notionAPIKey, _ := utils.SetAPIConfig()
+		pageID, err := resolvePageID()
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("add: %w", err))
+		}
 		if err := utils.AddNewToDoItem(notionAPIKey, pageID, text); err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("add: %w", err))
 		}

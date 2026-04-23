@@ -22,7 +22,11 @@ var uncheckCmd = &cobra.Command{
 		if err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("uncheck: parse order %q: %w", args[0], err))
 		}
-		notionAPIKey, pageID := utils.SetAPIConfig()
+		notionAPIKey, _ := utils.SetAPIConfig()
+		pageID, err := resolvePageID()
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("uncheck: %w", err))
+		}
 		if err := utils.MarkToDoBlockUnChecked(notionAPIKey, pageID, order); err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("uncheck: mark task %d incomplete: %w", order, err))
 		}

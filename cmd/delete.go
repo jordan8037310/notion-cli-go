@@ -22,7 +22,11 @@ var deleteCmd = &cobra.Command{
 		if err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("delete: parse order %q: %w", args[0], err))
 		}
-		notionAPIKey, pageID := utils.SetAPIConfig()
+		notionAPIKey, _ := utils.SetAPIConfig()
+		pageID, err := resolvePageID()
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("delete: %w", err))
+		}
 		if err := utils.DeleteToDoBlock(notionAPIKey, pageID, order); err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("delete: remove task %d: %w", order, err))
 		}

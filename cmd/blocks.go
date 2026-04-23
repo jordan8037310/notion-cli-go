@@ -43,7 +43,11 @@ var blocksListCmd = &cobra.Command{
 	Short: "List all blocks on the page",
 	Long:  `List all blocks on the Notion page with their type and content.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		notionAPIKey, pageID := utils.SetAPIConfig()
+		notionAPIKey, _ := utils.SetAPIConfig()
+		pageID, err := resolvePageID()
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("blocks list: %w", err))
+		}
 		// In --json mode skip the timezone lookup (it is only needed to
 		// format timestamps for human output) and emit raw Notion block
 		// objects as NDJSON.
@@ -135,7 +139,11 @@ Examples:
 			return nil
 		}
 
-		notionAPIKey, pageID := utils.SetAPIConfig()
+		notionAPIKey, _ := utils.SetAPIConfig()
+		pageID, err := resolvePageID()
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("blocks add: %w", err))
+		}
 
 		if err := utils.AddBlock(notionAPIKey, pageID, blockType, text); err != nil {
 			if globalJSON {
@@ -184,7 +192,11 @@ Example:
 			return nil
 		}
 
-		notionAPIKey, pageID := utils.SetAPIConfig()
+		notionAPIKey, _ := utils.SetAPIConfig()
+		pageID, err := resolvePageID()
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("blocks delete: %w", err))
+		}
 
 		if err := utils.DeleteBlock(notionAPIKey, pageID, order); err != nil {
 			if globalJSON {

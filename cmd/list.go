@@ -17,7 +17,11 @@ var listCmd = &cobra.Command{
 	Short: "List all tasks",
 	Long:  `List all tasks in the Notion page`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		notionAPIKey, pageID := utils.SetAPIConfig()
+		notionAPIKey, _ := utils.SetAPIConfig()
+		pageID, err := resolvePageID()
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("list: %w", err))
+		}
 		localTimezone, err := utils.GetLocalTimeZone()
 		if err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("list: resolve local time zone: %w", err))
