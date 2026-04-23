@@ -7,6 +7,7 @@ package utils
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -506,6 +507,52 @@ func TestRichTextPayload(t *testing.T) {
 	second, _ := out[1]["text"].(map[string]interface{})
 	if second["content"] != "world" {
 		t.Errorf("second content=%v want world", second["content"])
+	}
+}
+
+// TestPageClient_MissingAPIKey asserts that every HTTP-calling method on
+// PageClient refuses to issue a request when the underlying Client has an
+// empty API key, and returns ErrMissingAPIKey (wrapped).
+func TestPageClient_MissingAPIKey(t *testing.T) {
+	m := newPagesMockServer(t)
+	// Construct a Client with an empty apiKey but pointed at the mock so
+	// we can also assert no HTTP call escapes the guard.
+	c := NewClient("", WithBaseURL(m.srv.URL))
+	pc := NewPageClient(c)
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{name: "Get", call: func() error { _, err := pc.Get(ctx, "id"); return err }},
+		{name: "Create", call: func() error {
+			_, err := pc.Create(ctx, CreatePageRequest{Parent: PageParent{PageID: "p"}})
+			return err
+		}},
+		{name: "Update", call: func() error {
+			_, err := pc.Update(ctx, "id", UpdatePageRequest{Title: "t"})
+			return err
+		}},
+		{name: "Archive", call: func() error { return pc.Archive(ctx, "id") }},
+		{name: "Unarchive", call: func() error { return pc.Unarchive(ctx, "id") }},
+		{name: "Move", call: func() error { return pc.Move(ctx, "id", "newParent") }},
+		{name: "Duplicate", call: func() error { _, err := pc.Duplicate(ctx, "src", "parent"); return err }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call()
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !errors.Is(err, ErrMissingAPIKey) {
+				t.Errorf("expected errors.Is ErrMissingAPIKey, got %v", err)
+			}
+		})
+	}
+	// No HTTP traffic should have reached the mock.
+	if calls := m.callsSnapshot(); len(calls) != 0 {
+		t.Errorf("expected zero HTTP calls, got %d: %+v", len(calls), calls)
 	}
 }
 

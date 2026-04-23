@@ -6,9 +6,16 @@ package utils
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 )
+
+// ErrMissingAPIKey is returned by PageClient methods when the underlying
+// Client was constructed without a Notion integration token. Callers can
+// match it with errors.Is to distinguish configuration problems from
+// transport or Notion-side failures.
+var ErrMissingAPIKey = errors.New("notion api key is required")
 
 // PageClient is the typed resource client for the Notion pages API. Build one
 // with NewPageClient and reuse across calls — it is safe for concurrent use
@@ -20,6 +27,17 @@ type PageClient struct {
 // NewPageClient wraps a *Client with page-resource methods.
 func NewPageClient(c *Client) *PageClient {
 	return &PageClient{c: c}
+}
+
+// checkAuth ensures the underlying Client has a non-empty API key. Every
+// HTTP-calling method on PageClient calls this before issuing a request so
+// missing-credential errors surface as ErrMissingAPIKey rather than as an
+// opaque 401 from Notion.
+func (p *PageClient) checkAuth() error {
+	if p == nil || p.c == nil || p.c.apiKey == "" {
+		return ErrMissingAPIKey
+	}
+	return nil
 }
 
 // PageParent describes where a page lives. Notion accepts exactly one of
@@ -84,6 +102,9 @@ func titleProperty(title string) map[string]interface{} {
 
 // Get retrieves a page by ID via GET /v1/pages/{id}.
 func (p *PageClient) Get(ctx context.Context, id string) (*Page, error) {
+	if err := p.checkAuth(); err != nil {
+		return nil, fmt.Errorf("get page: %w", err)
+	}
 	if id == "" {
 		return nil, fmt.Errorf("get page: id is required")
 	}
@@ -106,6 +127,9 @@ func (p *PageClient) Get(ctx context.Context, id string) (*Page, error) {
 // req.Title is non-empty it is merged into Properties under the "title" key,
 // overwriting any title the caller already supplied there.
 func (p *PageClient) Create(ctx context.Context, req CreatePageRequest) (*Page, error) {
+	if err := p.checkAuth(); err != nil {
+		return nil, fmt.Errorf("create page: %w", err)
+	}
 	if req.Parent.DatabaseID == "" && req.Parent.PageID == "" && !req.Parent.Workspace {
 		return nil, fmt.Errorf("create page: parent is required")
 	}
@@ -143,6 +167,9 @@ func (p *PageClient) Create(ctx context.Context, req CreatePageRequest) (*Page, 
 // Update patches a page via PATCH /v1/pages/{id}. All fields on the request
 // are optional. Title, when non-empty, becomes a title property.
 func (p *PageClient) Update(ctx context.Context, id string, req UpdatePageRequest) (*Page, error) {
+	if err := p.checkAuth(); err != nil {
+		return nil, fmt.Errorf("update page: %w", err)
+	}
 	if id == "" {
 		return nil, fmt.Errorf("update page: id is required")
 	}
@@ -183,6 +210,9 @@ func (p *PageClient) Update(ctx context.Context, id string, req UpdatePageReques
 
 // setArchived issues the archived PATCH for Archive/Unarchive.
 func (p *PageClient) setArchived(ctx context.Context, id string, archived bool) error {
+	if err := p.checkAuth(); err != nil {
+		return fmt.Errorf("set archived: %w", err)
+	}
 	if id == "" {
 		return fmt.Errorf("set archived: id is required")
 	}
@@ -212,6 +242,9 @@ func (p *PageClient) Unarchive(ctx context.Context, id string) error {
 // newParentID is treated as a page_id parent; to move into a database parent
 // the caller should use Update with a PageParent{DatabaseID: ...}.
 func (p *PageClient) Move(ctx context.Context, id, newParentID string) error {
+	if err := p.checkAuth(); err != nil {
+		return fmt.Errorf("move page: %w", err)
+	}
 	if id == "" {
 		return fmt.Errorf("move page: id is required")
 	}
@@ -245,6 +278,9 @@ func (p *PageClient) Move(ctx context.Context, id, newParentID string) error {
 //   - The source's title, when retrievable, is used for the new page;
 //     otherwise "Copy" is used.
 func (p *PageClient) Duplicate(ctx context.Context, srcID, parentID string) (*Page, error) {
+	if err := p.checkAuth(); err != nil {
+		return nil, fmt.Errorf("duplicate page: %w", err)
+	}
 	if srcID == "" {
 		return nil, fmt.Errorf("duplicate page: source id is required")
 	}

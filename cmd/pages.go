@@ -45,9 +45,14 @@ Examples:
 }
 
 // newPageClient builds a PageClient using the CLI's standard config loading
-// so every subcommand shares identical client construction.
+// so every subcommand shares identical client construction. Returns
+// utils.ErrMissingAPIKey (wrapped) when NOTION_API_KEY resolves empty so
+// callers get a clear configuration error instead of a downstream 401.
 func newPageClient() (*utils.PageClient, error) {
 	apiKey, _ := utils.SetAPIConfig()
+	if apiKey == "" {
+		return nil, fmt.Errorf("pages client: %w", utils.ErrMissingAPIKey)
+	}
 	c := utils.NewClient(apiKey, utils.WithBaseURL(utils.GetBaseURL()))
 	return utils.NewPageClient(c), nil
 }
