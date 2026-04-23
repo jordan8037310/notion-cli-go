@@ -1,0 +1,325 @@
+// This code is licensed under the Apache License, Version 2.0 (the "License").
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
+package utils
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"time"
+)
+
+// BlockClient provides typed access to the Notion blocks API. Construct one
+// with NewBlockClient and pass it into callers that need block operations.
+// Every method takes a context.Context so requests can be cancelled or
+// deadlined from the caller.
+type BlockClient struct {
+	c *Client
+}
+
+// NewBlockClient wraps a *Client with block-resource methods.
+func NewBlockClient(c *Client) *BlockClient {
+	return &BlockClient{c: c}
+}
+
+// GetBlocks returns to-do blocks (and only to-dos with non-empty rich text)
+// for the given page. Preserves the pre-refactor filtering behavior so the
+// legacy top-level GetBlocks continues to match.
+func (b *BlockClient) GetBlocks(ctx context.Context, pageID string) ([]Block, error) {
+	req, err := b.c.newRequest(ctx, http.MethodGet, "/blocks/"+pageID+"/children", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := b.c.do(req)
+	if err != nil {
+		return nil, err
+	}
+	var blockList BlockList
+	if err := decodeInto(resp, &blockList); err != nil {
+		return nil, err
+	}
+
+	var blocks []Block
+	for _, result := range blockList.Results {
+		if result.Object == "block" && result.ToDo != nil && len(result.ToDo.RichText) > 0 {
+			blocks = append(blocks, result)
+		}
+	}
+	return blocks, nil
+}
+
+// GetToDoBlocks returns formatted to-do strings (index, check state, text,
+// last-edited time) for the given page, in the supplied timezone.
+func (b *BlockClient) GetToDoBlocks(ctx context.Context, pageID string, localTimezone *time.Location) ([]string, error) {
+	blocks, err := b.GetBlocks(ctx, pageID)
+	if err != nil {
+		return nil, err
+	}
+	var todoBlocks []string
+	for _, block := range blocks {
+		if block.ToDo == nil {
+			continue
+		}
+		checked := " "
+		if block.ToDo.Checked {
+			checked = "X"
+		}
+		lastEditedTime, err := time.Parse(time.RFC3339, block.LastEditedTime)
+		if err != nil {
+			return nil, err
+		}
+		truncatedTime := lastEditedTime.In(localTimezone).Truncate(time.Minute)
+		element := fmt.Sprintf("%d [%s] %s (%s)", len(todoBlocks)+1, checked, block.ToDo.RichText[0].PlainText, truncatedTime.Format("2006-01-02 15:04"))
+		todoBlocks = append(todoBlocks, element)
+	}
+	return todoBlocks, nil
+}
+
+// AddNewToDoItem appends a to-do block with the given text to the given
+// page.
+func (b *BlockClient) AddNewToDoItem(ctx context.Context, pageID, text string) error {
+	body := map[string]interface{}{
+		"children": []map[string]interface{}{
+			{
+				"object": "block",
+				"type":   "to_do",
+				"to_do": map[string]interface{}{
+					"rich_text": []map[string]interface{}{
+						{
+							"type": "text",
+							"text": map[string]interface{}{
+								"content": text,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	req, err := b.c.newRequest(ctx, http.MethodPatch, "/blocks/"+pageID+"/children", body)
+	if err != nil {
+		return err
+	}
+	resp, err := b.c.do(req)
+	if err != nil {
+		return err
+	}
+	return expectStatus(resp, http.StatusOK)
+}
+
+// GetBlockID resolves a 1-based block index on the given page into the
+// block's Notion ID.
+func (b *BlockClient) GetBlockID(ctx context.Context, pageID string, order int) (string, error) {
+	if order < 1 {
+		return "", fmt.Errorf("order must be greater than 0")
+	}
+	req, err := b.c.newRequest(ctx, http.MethodGet, "/blocks/"+pageID+"/children", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := b.c.do(req)
+	if err != nil {
+		return "", err
+	}
+	var blockList BlockList
+	if err := decodeInto(resp, &blockList); err != nil {
+		return "", err
+	}
+	if order > len(blockList.Results) {
+		return "", fmt.Errorf("order number exceeds the number of blocks")
+	}
+	return blockList.Results[order-1].ID, nil
+}
+
+// MarkToDoBlockChecked flips the to-do at the given index to checked=true.
+func (b *BlockClient) MarkToDoBlockChecked(ctx context.Context, pageID string, order int) error {
+	return b.setToDoChecked(ctx, pageID, order, true)
+}
+
+// MarkToDoBlockUnChecked flips the to-do at the given index to checked=false.
+func (b *BlockClient) MarkToDoBlockUnChecked(ctx context.Context, pageID string, order int) error {
+	return b.setToDoChecked(ctx, pageID, order, false)
+}
+
+func (b *BlockClient) setToDoChecked(ctx context.Context, pageID string, order int, checked bool) error {
+	blockID, err := b.GetBlockID(ctx, pageID, order)
+	if err != nil {
+		return err
+	}
+	body := map[string]interface{}{
+		"to_do": map[string]interface{}{
+			"checked": checked,
+		},
+	}
+	req, err := b.c.newRequest(ctx, http.MethodPatch, "/blocks/"+blockID, body)
+	if err != nil {
+		return err
+	}
+	resp, err := b.c.do(req)
+	if err != nil {
+		return err
+	}
+	return expectStatus(resp, http.StatusOK)
+}
+
+// DeleteToDoBlock removes the to-do at the given 1-based index.
+func (b *BlockClient) DeleteToDoBlock(ctx context.Context, pageID string, order int) error {
+	blockID, err := b.GetBlockID(ctx, pageID, order)
+	if err != nil {
+		return err
+	}
+	req, err := b.c.newRequest(ctx, http.MethodDelete, "/blocks/"+blockID, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := b.c.do(req)
+	if err != nil {
+		return err
+	}
+	return expectStatus(resp, http.StatusOK)
+}
+
+// GetAllBlocks retrieves every block under a page, following pagination.
+// When filterType is non-empty, only blocks whose Type matches are
+// returned.
+func (b *BlockClient) GetAllBlocks(ctx context.Context, pageID, filterType string) ([]Block, error) {
+	var result []Block
+	var cursor string
+
+	for {
+		path := "/blocks/" + pageID + "/children"
+		if cursor != "" {
+			path += "?start_cursor=" + cursor
+		}
+		req, err := b.c.newRequest(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := b.c.do(req)
+		if err != nil {
+			return nil, err
+		}
+		var blockList BlockList
+		if err := decodeInto(resp, &blockList); err != nil {
+			return nil, err
+		}
+		for _, block := range blockList.Results {
+			if block.Object != "block" {
+				continue
+			}
+			if filterType == "" || block.Type == filterType {
+				result = append(result, block)
+			}
+		}
+		if !blockList.HasMore || blockList.NextCursor == "" {
+			break
+		}
+		cursor = blockList.NextCursor
+	}
+	return result, nil
+}
+
+// FormatAllBlocks returns human-readable lines plus a by-type count for
+// every block under pageID, optionally filtered by filterType.
+func (b *BlockClient) FormatAllBlocks(ctx context.Context, pageID string, localTimezone *time.Location, filterType string) ([]string, map[string]int, error) {
+	blocks, err := b.GetAllBlocks(ctx, pageID, filterType)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var formatted []string
+	typeCounts := make(map[string]int)
+	for index, block := range blocks {
+		lastEditedTime, err := time.Parse(time.RFC3339, block.LastEditedTime)
+		if err != nil {
+			return nil, nil, err
+		}
+		truncatedTime := lastEditedTime.In(localTimezone).Truncate(time.Minute)
+		icon := GetBlockIcon(block)
+		content := GetBlockContent(block)
+		if len(content) > 50 {
+			content = content[:47] + "..."
+		}
+		element := fmt.Sprintf("%4d %s  [%-20s] %s (%s)",
+			index+1,
+			icon,
+			block.Type,
+			content,
+			truncatedTime.Format("2006-01-02 15:04"))
+		formatted = append(formatted, element)
+		typeCounts[block.Type]++
+	}
+	return formatted, typeCounts, nil
+}
+
+// AddBlock appends a block of the given type to the given page. Pass the
+// block's text for rich-text types; text is ignored for the divider block.
+func (b *BlockClient) AddBlock(ctx context.Context, pageID, blockType, text string) error {
+	if !IsValidBlockType(blockType) {
+		return fmt.Errorf("unsupported block type: %s", blockType)
+	}
+
+	var blockContent map[string]interface{}
+	if blockType == "divider" {
+		blockContent = map[string]interface{}{
+			"object":  "block",
+			"type":    "divider",
+			"divider": map[string]interface{}{},
+		}
+	} else {
+		richText := []map[string]interface{}{
+			{
+				"type": "text",
+				"text": map[string]interface{}{
+					"content": text,
+				},
+			},
+		}
+		innerContent := map[string]interface{}{"rich_text": richText}
+		if blockType == "code" {
+			innerContent["language"] = "plain text"
+		}
+		blockContent = map[string]interface{}{
+			"object":  "block",
+			"type":    blockType,
+			blockType: innerContent,
+		}
+	}
+
+	body := map[string]interface{}{
+		"children": []map[string]interface{}{blockContent},
+	}
+	req, err := b.c.newRequest(ctx, http.MethodPatch, "/blocks/"+pageID+"/children", body)
+	if err != nil {
+		return err
+	}
+	resp, err := b.c.do(req)
+	if err != nil {
+		return err
+	}
+	return expectStatus(resp, http.StatusOK)
+}
+
+// DeleteBlock removes the block at the given 1-based index across the full
+// paginated block list.
+func (b *BlockClient) DeleteBlock(ctx context.Context, pageID string, order int) error {
+	blocks, err := b.GetAllBlocks(ctx, pageID, "")
+	if err != nil {
+		return err
+	}
+	if order < 1 || order > len(blocks) {
+		return fmt.Errorf("block number %d out of range (1-%d)", order, len(blocks))
+	}
+	blockID := blocks[order-1].ID
+	req, err := b.c.newRequest(ctx, http.MethodDelete, "/blocks/"+blockID, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := b.c.do(req)
+	if err != nil {
+		return err
+	}
+	return expectStatus(resp, http.StatusOK)
+}
