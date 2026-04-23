@@ -5,6 +5,7 @@
 package utils
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -406,6 +407,23 @@ func FormatAllBlocks(notionAPIKey, pageID string, localTimezone *time.Location, 
 	return defaultBlockClient(notionAPIKey).FormatAllBlocks(defaultCtx(), pageID, localTimezone, filterType)
 }
 
+// FormatAllBlocksWithResolver is FormatAllBlocks but threads the given
+// PageTitleResolver into the snippet renderer so page mentions expand
+// from the legacy "[page:<id>]" marker into "[<title>]". Callers that
+// do not need resolution should continue to use FormatAllBlocks — the
+// legacy helper passes a NoPageResolver internally and preserves the
+// pre-resolver output byte-for-byte.
+//
+// This is a human-output affordance only. JSON paths must NOT go
+// through this helper: emitting resolved titles there would be lossy
+// round-tripping (the original rich_text mention shape is replaced by a
+// bracketed string). Keep JSON on raw rich_text arrays.
+//
+// Deprecated: prefer BlockClient.FormatAllBlocksWithResolver.
+func FormatAllBlocksWithResolver(notionAPIKey, pageID string, localTimezone *time.Location, filterType string, resolver PageTitleResolver) ([]string, map[string]int, error) {
+	return defaultBlockClient(notionAPIKey).FormatAllBlocksWithResolver(defaultCtx(), pageID, localTimezone, filterType, resolver)
+}
+
 // AddBlock delegates to BlockClient.AddBlock on a default client. The
 // variadic opts argument passes media URLs, captions, and other per-type
 // metadata through to the block payload.
@@ -562,7 +580,20 @@ func extendedBlockContent(block Block) (string, bool) {
 // "$…$") so callers see the whole block, not just the first segment.
 // fatih/color respects color.NoColor — when --json toggles that off,
 // RenderRichText emits plain text without ANSI escapes.
+//
+// This overload keeps legacy call sites intact — it delegates to
+// GetBlockContentWithResolver with a NoPageResolver which errors on every
+// lookup and therefore preserves the "[page:<id>]" marker.
 func GetBlockContent(block Block) string {
+	return GetBlockContentWithResolver(context.Background(), block, NoPageResolver{})
+}
+
+// GetBlockContentWithResolver is GetBlockContent but routes page mentions
+// through the supplied PageTitleResolver so "[page:<id>]" can be
+// expanded to "[<title>]". Semantics match RenderRichTextWithResolver
+// for page mentions; non-rich-text block types (divider, media, table,
+// etc.) are unaffected by the resolver.
+func GetBlockContentWithResolver(ctx context.Context, block Block, resolver PageTitleResolver) string {
 	if block.Type == "divider" {
 		return "───────────"
 	}
@@ -573,14 +604,26 @@ func GetBlockContent(block Block) string {
 	if len(rt) == 0 {
 		return "(empty)"
 	}
-	return RenderRichText(rt)
+	return RenderRichTextWithResolver(ctx, rt, resolver)
 }
 
 // GetBlockContentPlain returns the block's text with no annotations,
 // mention markers, or equation delimiters applied — just the concatenated
 // PlainText of every segment. Use this from tests and JSON paths that
 // want a stable string and don't care about the visual rendering.
+//
+// This overload keeps legacy call sites intact — it delegates to
+// GetBlockContentPlainWithResolver with a NoPageResolver which errors on
+// every lookup and therefore preserves the "[page:<id>]" marker.
 func GetBlockContentPlain(block Block) string {
+	return GetBlockContentPlainWithResolver(context.Background(), block, NoPageResolver{})
+}
+
+// GetBlockContentPlainWithResolver is GetBlockContentPlain but routes
+// page mentions through the supplied PageTitleResolver so "[page:<id>]"
+// can be expanded to "[<title>]". Still emits an ANSI-free string so the
+// snippet truncation in FormatAllBlocks stays byte-slice safe.
+func GetBlockContentPlainWithResolver(ctx context.Context, block Block, resolver PageTitleResolver) string {
 	if block.Type == "divider" {
 		return "───────────"
 	}
@@ -591,7 +634,7 @@ func GetBlockContentPlain(block Block) string {
 	if len(rt) == 0 {
 		return "(empty)"
 	}
-	return PlainRichText(rt)
+	return PlainRichTextWithResolver(ctx, rt, resolver)
 }
 
 // mediaBlockContent returns a human-readable one-liner for a MediaBlock.

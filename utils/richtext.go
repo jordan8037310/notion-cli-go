@@ -231,13 +231,29 @@ func colorAttribute(name string) color.Attribute {
 // mentions expanded to their markers and equations wrapped in "$…$" but
 // no ANSI escapes applied. Used by JSON paths and by tests that need a
 // deterministic string without fighting color.NoColor global state.
+//
+// This overload keeps legacy call sites intact — it delegates to
+// PlainRichTextWithResolver with a NoPageResolver which errors on every
+// lookup and therefore preserves the "[page:<id>]" marker.
 func PlainRichText(rt []RichText) string {
+	return PlainRichTextWithResolver(context.Background(), rt, NoPageResolver{})
+}
+
+// PlainRichTextWithResolver is PlainRichText but routes page mentions
+// through the supplied PageTitleResolver so "[page:<id>]" can be
+// expanded to "[<title>]". Semantics match RenderRichTextWithResolver
+// (resolver error or empty title → legacy "[page:<id>]" marker); the
+// only difference is that no ANSI annotations are applied.
+//
+// Used by FormatAllBlocks's snippet path — the 50-char truncation there
+// byte-slices the string, which is safe only with no ANSI escapes.
+func PlainRichTextWithResolver(ctx context.Context, rt []RichText, resolver PageTitleResolver) string {
 	if len(rt) == 0 {
 		return ""
 	}
 	var sb strings.Builder
 	for i := range rt {
-		sb.WriteString(segmentPayload(&rt[i]))
+		sb.WriteString(segmentPayloadWithResolver(ctx, &rt[i], resolver))
 	}
 	return sb.String()
 }

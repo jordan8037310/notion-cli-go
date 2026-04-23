@@ -223,7 +223,26 @@ func (b *BlockClient) GetAllBlocks(ctx context.Context, pageID, filterType strin
 
 // FormatAllBlocks returns human-readable lines plus a by-type count for
 // every block under pageID, optionally filtered by filterType.
+//
+// This overload keeps legacy call sites intact — it delegates to
+// FormatAllBlocksWithResolver with a NoPageResolver which errors on every
+// lookup and therefore preserves the "[page:<id>]" marker byte-for-byte.
 func (b *BlockClient) FormatAllBlocks(ctx context.Context, pageID string, localTimezone *time.Location, filterType string) ([]string, map[string]int, error) {
+	return b.FormatAllBlocksWithResolver(ctx, pageID, localTimezone, filterType, NoPageResolver{})
+}
+
+// FormatAllBlocksWithResolver is FormatAllBlocks with a caller-supplied
+// PageTitleResolver threaded through the snippet renderer so page
+// mentions in "[page:<id>]" positions expand to "[<title>]" when the
+// resolver succeeds. Any resolver error or empty title falls back to
+// the legacy marker (per RenderRichTextWithResolver semantics), so a
+// 404 on one mention can never panic or drop content.
+//
+// Human-output path only. JSON paths must continue to emit raw
+// rich_text arrays (see cmd/blocks.go blocks list --json) so caller
+// tooling sees the original mention shape rather than a bracketed
+// lossy string.
+func (b *BlockClient) FormatAllBlocksWithResolver(ctx context.Context, pageID string, localTimezone *time.Location, filterType string, resolver PageTitleResolver) ([]string, map[string]int, error) {
 	blocks, err := b.GetAllBlocks(ctx, pageID, filterType)
 	if err != nil {
 		return nil, nil, err
@@ -245,8 +264,9 @@ func (b *BlockClient) FormatAllBlocks(ctx context.Context, pageID string, localT
 		// already flipped off under --json via rootCmd's PersistentPreRunE,
 		// but relying on that for correctness here would make a future
 		// caller of FormatAllBlocks from a JSON path silently leak escapes
-		// into the stream. GetBlockContentPlain closes the gap.
-		content := GetBlockContentPlain(block)
+		// into the stream. GetBlockContentPlainWithResolver closes the gap
+		// while still expanding page mentions when a resolver is wired.
+		content := GetBlockContentPlainWithResolver(ctx, block, resolver)
 		if len(content) > 50 {
 			content = content[:47] + "..."
 		}
