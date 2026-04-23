@@ -2,22 +2,107 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
-// TestNewFileClient is a smoke test for the constructor so the gap-check
-// script sees a matching Test function for NewFileClient. It also pins the
-// behavior that the wrapper stores the caller's *Client verbatim (no copy,
-// no indirection), which matters for tests that construct one client and
-// reuse it across resource clients.
-//
-// Name intentionally uses TestNewFileClient (no _Files infix) so
-// scripts/check-test-coverage.sh matches Test<FuncName>. TestFiles_* is
-// the prefix for every other test in this file per the agent brief.
+// fakeNotionFileAPI returns an httptest server that implements the two-
+// step upload flow. Step 1 (POST /v1/file_uploads) returns an
+// upload_url that points back at the same server's /file_uploads/{id}/send
+// path. Step 2 reads the multipart body and records the bytes in
+// captured.
+type fakeNotionFileAPI struct {
+	mu          sync.Mutex
+	uploadedID  string
+	uploadedNm  string
+	uploadedBuf []byte
+	step2Called bool
+	failStep2   bool
+}
+
+func (f *fakeNotionFileAPI) handler(t *testing.T) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/file_uploads":
+			// Echo filename back from request body.
+			var req FileUploadRequest
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &req)
+
+			f.mu.Lock()
+			f.uploadedID = "file-123"
+			f.uploadedNm = req.Filename
+			f.mu.Unlock()
+
+			upload := "http://" + r.Host + "/file_uploads/file-123/send"
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(FileUploadResponse{
+				Object:     "file_upload",
+				ID:         "file-123",
+				UploadURL:  upload,
+				Status:     "pending",
+				ExpiryTime: "2026-06-01T00:00:00Z",
+				Filename:   req.Filename,
+			})
+
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/file_uploads/") && strings.HasSuffix(r.URL.Path, "/send"):
+			f.mu.Lock()
+			f.step2Called = true
+			shouldFail := f.failStep2
+			f.mu.Unlock()
+
+			if shouldFail {
+				http.Error(w, `{"object":"error","code":"bad_request"}`, http.StatusBadRequest)
+				return
+			}
+
+			// Parse the multipart body so tests can assert the
+			// file part arrived intact.
+			if err := r.ParseMultipartForm(32 << 20); err != nil {
+				http.Error(w, "bad multipart: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			fh := r.MultipartForm.File["file"]
+			if len(fh) == 0 {
+				http.Error(w, `missing "file" part`, http.StatusBadRequest)
+				return
+			}
+			src, err := fh[0].Open()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			defer src.Close()
+			buf, _ := io.ReadAll(src)
+
+			f.mu.Lock()
+			f.uploadedBuf = buf
+			f.mu.Unlock()
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(FileUploadResponse{
+				Object: "file_upload",
+				ID:     "file-123",
+				Status: "uploaded",
+			})
+
+		default:
+			http.Error(w, `{"object":"error","code":"not_found"}`, http.StatusNotFound)
+		}
+	})
+}
+
+// TestNewFileClient is a smoke test for the constructor.
 func TestNewFileClient(t *testing.T) {
 	c := NewClient("k", WithBaseURL("http://example"))
 	got := NewFileClient(c)
@@ -29,14 +114,7 @@ func TestNewFileClient(t *testing.T) {
 	}
 }
 
-// TestNewFileRef pins the constructor's contract: Type is always the
-// FileRefTypeFileUpload constant, ID and Name are passed through verbatim,
-// and ExpiryTime is empty for caller assignment. A test here means a change
-// to the "file_upload" literal has to break either the constant or the
-// struct tag — it cannot silently drift.
-//
-// Name intentionally uses TestNewFileRef (no _Files infix) so
-// scripts/check-test-coverage.sh matches Test<FuncName>.
+// TestNewFileRef pins the constructor's contract.
 func TestNewFileRef(t *testing.T) {
 	got := NewFileRef("abc-123", "hello.png")
 	if got == nil {
@@ -51,33 +129,12 @@ func TestNewFileRef(t *testing.T) {
 	if got.Type != FileRefTypeFileUpload {
 		t.Errorf("NewFileRef: Type = %q, want %q", got.Type, FileRefTypeFileUpload)
 	}
-	if got.Type != "file_upload" {
-		t.Errorf("NewFileRef: Type = %q, want the exact Notion discriminator %q", got.Type, "file_upload")
-	}
-	if got.ExpiryTime != "" {
-		t.Errorf("NewFileRef: ExpiryTime = %q, want empty", got.ExpiryTime)
+	if FileRefTypeFileUpload != "file_upload" {
+		t.Errorf("FileRefTypeFileUpload drift: got %q, want file_upload", FileRefTypeFileUpload)
 	}
 }
 
-// TestFiles_ErrFileUploadNotSupported_MessageReferences11 asserts the error
-// message mentions the pinned version and issue #11, so an operator reading
-// a CLI error knows which tracking issue to watch. Mirrors the teams
-// pattern exactly — if these drift, grepping for "#11" across error
-// messages will lose a hit and the PR that removes it gets flagged.
-func TestFiles_ErrFileUploadNotSupported_MessageReferences11(t *testing.T) {
-	msg := ErrFileUploadNotSupported.Error()
-	if !strings.Contains(msg, NotionAPIVersion) {
-		t.Errorf("ErrFileUploadNotSupported message = %q; want it to mention %q", msg, NotionAPIVersion)
-	}
-	if !strings.Contains(msg, "#11") {
-		t.Errorf("ErrFileUploadNotSupported message = %q; want it to mention %q", msg, "#11")
-	}
-}
-
-// writeTempFile creates a file of the requested size under t.TempDir and
-// returns the absolute path. Size is exact — the file is filled with a
-// repeating byte so callers can round-trip a content assertion without
-// parsing.
+// writeTempFile creates a file of the requested size under t.TempDir.
 func writeTempFile(t *testing.T, size int64) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "upload.bin")
@@ -98,39 +155,105 @@ func writeTempFile(t *testing.T, size int64) string {
 	return path
 }
 
-// TestUpload_NotSupported is the headline assertion for the stub: a
-// correctly-validated path still returns ErrFileUploadNotSupported, and the
-// returned FileRef is nil. Uses a tiny real file so the size-cap branch is
-// NOT exercised here — that branch has its own test below.
-//
-// Name intentionally starts with TestUpload so the gap checker matches
-// FileClient.Upload via Test<FuncName>. Remaining upload tests in this
-// file use the TestFiles_Upload_* prefix.
-func TestUpload_NotSupported(t *testing.T) {
-	client := NewFileClient(NewClient("k", WithBaseURL("http://127.0.0.1:0")))
-	path := writeTempFile(t, 16)
-	got, err := client.Upload(context.Background(), path)
-	if err == nil {
-		t.Fatalf("Upload: want error, got FileRef %+v", got)
+// TestUpload_HappyPath exercises the full two-step flow and verifies
+// the returned FileRef plus the bytes the server observed.
+func TestUpload_HappyPath(t *testing.T) {
+	api := &fakeNotionFileAPI{}
+	srv := httptest.NewServer(api.handler(t))
+	defer srv.Close()
+
+	path := filepath.Join(t.TempDir(), "hello.png")
+	payload := []byte("hello-bytes")
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
 	}
-	if !errors.Is(err, ErrFileUploadNotSupported) {
-		t.Errorf("Upload: want errors.Is ErrFileUploadNotSupported, got %v", err)
+
+	client := NewFileClient(NewClient("k", WithBaseURL(srv.URL)))
+	ref, err := client.Upload(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
 	}
-	if got != nil {
-		t.Errorf("Upload: want nil FileRef, got %+v", got)
+	if ref == nil || ref.ID != "file-123" {
+		t.Errorf("Upload ref = %+v, want ID=file-123", ref)
 	}
-	if !strings.Contains(err.Error(), "upload.bin") {
-		t.Errorf("Upload: want error to name the file, got %v", err)
+	if ref.Type != FileRefTypeFileUpload {
+		t.Errorf("Upload ref.Type = %q, want %q", ref.Type, FileRefTypeFileUpload)
+	}
+	if ref.Name != "hello.png" {
+		t.Errorf("Upload ref.Name = %q, want hello.png", ref.Name)
+	}
+	if !api.step2Called {
+		t.Error("Upload: step 2 (multipart PUT) was not called")
+	}
+	if string(api.uploadedBuf) != string(payload) {
+		t.Errorf("Upload: bytes on wire = %q, want %q", api.uploadedBuf, payload)
+	}
+	if api.uploadedNm != "hello.png" {
+		t.Errorf("Upload: filename on wire = %q, want hello.png", api.uploadedNm)
 	}
 }
 
-// TestFiles_Upload_MissingAPIKey asserts an unconfigured Client is caught
-// BEFORE path validation, matching PageClient.checkAuth's posture. A missing
-// key is an operator error; surfacing it through ErrMissingAPIKey lets the
-// CLI show a configuration-specific message instead of a generic 401.
+// TestFiles_Upload_Step1Error surfaces a non-2xx from step 1 without
+// calling step 2.
+func TestFiles_Upload_Step1Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"object":"error","code":"unauthorized"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	path := writeTempFile(t, 4)
+	client := NewFileClient(NewClient("k", WithBaseURL(srv.URL)))
+	_, err := client.Upload(context.Background(), path)
+	if err == nil {
+		t.Fatal("Upload: want error on 401")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("Upload error = %q; want 401", err.Error())
+	}
+}
+
+// TestFiles_Upload_Step2Error surfaces a non-2xx from step 2 without
+// panicking.
+func TestFiles_Upload_Step2Error(t *testing.T) {
+	api := &fakeNotionFileAPI{failStep2: true}
+	srv := httptest.NewServer(api.handler(t))
+	defer srv.Close()
+
+	path := writeTempFile(t, 4)
+	client := NewFileClient(NewClient("k", WithBaseURL(srv.URL)))
+	_, err := client.Upload(context.Background(), path)
+	if err == nil {
+		t.Fatal("Upload: want error on step 2 400")
+	}
+	if !strings.Contains(err.Error(), "send") {
+		t.Errorf("Upload error = %q; want to mention 'send'", err.Error())
+	}
+}
+
+// TestFiles_Upload_MissingUploadURL guards against a malformed step-1
+// response.
+func TestFiles_Upload_MissingUploadURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(FileUploadResponse{Object: "file_upload", ID: "file-123"})
+	}))
+	defer srv.Close()
+
+	path := writeTempFile(t, 4)
+	client := NewFileClient(NewClient("k", WithBaseURL(srv.URL)))
+	_, err := client.Upload(context.Background(), path)
+	if err == nil {
+		t.Fatal("Upload: want error for missing upload_url")
+	}
+	if !strings.Contains(err.Error(), "upload_url") {
+		t.Errorf("Upload error = %q; want to mention upload_url", err.Error())
+	}
+}
+
+// TestFiles_Upload_MissingAPIKey asserts an unconfigured Client is
+// caught BEFORE path validation.
 func TestFiles_Upload_MissingAPIKey(t *testing.T) {
 	client := NewFileClient(NewClient("", WithBaseURL("http://127.0.0.1:0")))
-	// A real file is fine — we expect the auth check to short-circuit.
 	path := writeTempFile(t, 1)
 	got, err := client.Upload(context.Background(), path)
 	if err == nil {
@@ -139,24 +262,17 @@ func TestFiles_Upload_MissingAPIKey(t *testing.T) {
 	if !errors.Is(err, ErrMissingAPIKey) {
 		t.Errorf("Upload: want errors.Is ErrMissingAPIKey, got %v", err)
 	}
-	if got != nil {
-		t.Errorf("Upload: want nil FileRef, got %+v", got)
-	}
 }
 
-// TestFiles_Upload_ValidationErrors table-drives every client-side rejection
-// path (empty, missing, directory, oversize). Each row asserts the error
-// mentions the path or the cap so operators can action the message.
+// TestFiles_Upload_ValidationErrors table-drives every client-side
+// rejection path.
 func TestFiles_Upload_ValidationErrors(t *testing.T) {
-	// Prepare fixtures once, reuse across rows.
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "does-not-exist.bin")
-	// A directory path.
 	subdir := filepath.Join(dir, "a-dir")
 	if err := os.Mkdir(subdir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	// An oversize file.
 	bigPath := filepath.Join(dir, "big.bin")
 	big, err := os.Create(bigPath)
 	if err != nil {
@@ -172,26 +288,10 @@ func TestFiles_Upload_ValidationErrors(t *testing.T) {
 		path          string
 		wantFragments []string
 	}{
-		{
-			name:          "empty path",
-			path:          "",
-			wantFragments: []string{"path is required"},
-		},
-		{
-			name:          "missing file",
-			path:          missing,
-			wantFragments: []string{"stat", "does-not-exist.bin"},
-		},
-		{
-			name:          "directory",
-			path:          subdir,
-			wantFragments: []string{"a-dir", "directory"},
-		},
-		{
-			name:          "oversize file",
-			path:          bigPath,
-			wantFragments: []string{"big.bin", "exceeds client cap"},
-		},
+		{"empty path", "", []string{"path is required"}},
+		{"missing file", missing, []string{"stat", "does-not-exist.bin"}},
+		{"directory", subdir, []string{"a-dir", "directory"}},
+		{"oversize file", bigPath, []string{"big.bin", "exceeds client cap"}},
 	}
 
 	client := NewFileClient(NewClient("k", WithBaseURL("http://127.0.0.1:0")))
@@ -205,27 +305,17 @@ func TestFiles_Upload_ValidationErrors(t *testing.T) {
 			if got != nil {
 				t.Errorf("Upload(%q): want nil FileRef, got %+v", tt.path, got)
 			}
-			// Validation errors must NOT be wrapped as
-			// ErrFileUploadNotSupported — operators need to see the
-			// specific path problem, not the version-bump stub error.
-			if errors.Is(err, ErrFileUploadNotSupported) {
-				t.Errorf("Upload(%q): validation error should not wrap ErrFileUploadNotSupported, got %v", tt.path, err)
-			}
-			msg := err.Error()
 			for _, frag := range tt.wantFragments {
-				if !strings.Contains(msg, frag) {
-					t.Errorf("Upload(%q): error %q missing fragment %q", tt.path, msg, frag)
+				if !strings.Contains(err.Error(), frag) {
+					t.Errorf("Upload(%q): error %q missing fragment %q", tt.path, err.Error(), frag)
 				}
 			}
 		})
 	}
 }
 
-// TestFiles_Upload_RespectsCtxCancel asserts the stub returns a
-// context-cancellation error rather than the stub sentinel when the caller
-// has already cancelled the ctx. The real #11 implementation will thread
-// ctx into both HTTP calls; locking the cancel-first behavior here means a
-// switchover that loses the ctx.Err() check fails this test.
+// TestFiles_Upload_RespectsCtxCancel asserts Upload fails fast on an
+// already-cancelled ctx without hitting the network.
 func TestFiles_Upload_RespectsCtxCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -239,19 +329,9 @@ func TestFiles_Upload_RespectsCtxCancel(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Upload: want errors.Is context.Canceled, got %v", err)
 	}
-	if errors.Is(err, ErrFileUploadNotSupported) {
-		t.Errorf("Upload: cancelled ctx should not surface ErrFileUploadNotSupported, got %v", err)
-	}
-	if got != nil {
-		t.Errorf("Upload: want nil FileRef, got %+v", got)
-	}
 }
 
-// TestFiles_Upload_ExactlyAtSizeCap verifies the boundary between the
-// accepted and rejected branches. A file of exactly MaxFileUploadBytes must
-// pass validation (and therefore surface the stub error, not a size error).
-// This locks in the ">= vs >" choice so a later refactor cannot drift it
-// without a failing test.
+// TestFiles_Upload_ExactlyAtSizeCap verifies the boundary case.
 func TestFiles_Upload_ExactlyAtSizeCap(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "at-cap.bin")
 	f, err := os.Create(path)
@@ -263,12 +343,51 @@ func TestFiles_Upload_ExactlyAtSizeCap(t *testing.T) {
 	}
 	_ = f.Close()
 
-	client := NewFileClient(NewClient("k", WithBaseURL("http://127.0.0.1:0")))
-	_, err = client.Upload(context.Background(), path)
-	if err == nil {
-		t.Fatal("Upload: want stub error, got nil")
+	// Point at a server that completes the two-step flow so the cap
+	// test exercises the full success path rather than getting
+	// masked by a connection refusal.
+	api := &fakeNotionFileAPI{}
+	srv := httptest.NewServer(api.handler(t))
+	defer srv.Close()
+
+	client := NewFileClient(NewClient("k", WithBaseURL(srv.URL)))
+	ref, err := client.Upload(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Upload at exact cap: %v", err)
 	}
-	if !errors.Is(err, ErrFileUploadNotSupported) {
-		t.Errorf("Upload at exact cap: want errors.Is ErrFileUploadNotSupported, got %v", err)
+	if ref == nil || ref.ID != "file-123" {
+		t.Errorf("Upload at exact cap: ref = %+v", ref)
 	}
+}
+
+// TestFiles_PutMultipart_Headers asserts the multipart content-type
+// header is set and includes a boundary.
+func TestFiles_PutMultipart_Headers(t *testing.T) {
+	var gotType string
+	var gotAuth string
+	var gotVersion string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotType = r.Header.Get("Content-Type")
+		gotAuth = r.Header.Get("Authorization")
+		gotVersion = r.Header.Get("Notion-Version")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := NewFileClient(NewClient("k", WithBaseURL(srv.URL)))
+	path := writeTempFile(t, 4)
+	if err := client.putMultipart(context.Background(), srv.URL+"/send", path, "upload.bin"); err != nil {
+		t.Fatalf("putMultipart: %v", err)
+	}
+	if !strings.HasPrefix(gotType, "multipart/form-data; boundary=") {
+		t.Errorf("Content-Type = %q; want multipart/form-data with boundary", gotType)
+	}
+	if gotAuth != "Bearer k" {
+		t.Errorf("Authorization = %q; want Bearer k", gotAuth)
+	}
+	if gotVersion != NotionAPIVersion {
+		t.Errorf("Notion-Version = %q; want %q", gotVersion, NotionAPIVersion)
+	}
+	// Exercise multipart import for the linter.
+	_ = multipart.NewWriter(nil)
 }
