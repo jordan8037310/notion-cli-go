@@ -17,11 +17,11 @@ import (
 )
 
 var (
-	blockType       string
-	blockURL        string
-	blockCaption    string
-	blockFileID     string
-	blockLanguage   string
+	blockType     string
+	blockURL      string
+	blockCaption  string
+	blockFileID   string
+	blockLanguage string
 )
 
 // blocksCmd represents the blocks command
