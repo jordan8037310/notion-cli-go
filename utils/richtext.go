@@ -5,6 +5,7 @@
 package utils
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -26,39 +27,72 @@ import (
 //
 // Mention policy (v1):
 //   - user     → "@<name>" (falls back to "@<id>" when Name is empty)
-//   - page     → "[page:<id>]" (page title requires a separate fetch;
-//     deferred to a follow-up issue)
+//   - page     → "[page:<id>]" by default; when a PageTitleResolver is
+//     supplied via RenderRichTextWithResolver and it returns a
+//     non-empty title, renders as "[<title>]" instead
 //   - date     → "<start>" or "<start..end>"
 //   - database → "{db:<id>}"
+//
+// This overload keeps legacy call sites intact — it delegates to
+// RenderRichTextWithResolver with a NoPageResolver which errors on every
+// lookup and therefore preserves the "[page:<id>]" marker.
 func RenderRichText(rt []RichText) string {
+	return RenderRichTextWithResolver(context.Background(), rt, NoPageResolver{})
+}
+
+// RenderRichTextWithResolver is RenderRichText but routes page mentions
+// through the supplied PageTitleResolver so "[page:<id>]" can be
+// expanded to "[<title>]".
+//
+// Semantics:
+//   - resolver == nil or NoPageResolver{} → legacy "[page:<id>]"
+//   - resolver returns a non-empty title → "[<title>]"
+//   - resolver returns ("", nil) (page exists but has no title) →
+//     falls back to "[page:<id>]" rather than emitting "[]"
+//   - resolver returns any error → falls back to "[page:<id>]"
+//
+// The resolver is invoked once per page mention segment; caching (so a
+// block that mentions the same page many times triggers a single API
+// call) is a concern of the resolver implementation — see
+// CachingPageResolver.
+func RenderRichTextWithResolver(ctx context.Context, rt []RichText, resolver PageTitleResolver) string {
 	if len(rt) == 0 {
 		return ""
 	}
 	var sb strings.Builder
 	for i := range rt {
-		sb.WriteString(renderSegment(&rt[i]))
+		sb.WriteString(renderSegmentWithResolver(ctx, &rt[i], resolver))
 	}
 	return sb.String()
 }
 
-// renderSegment produces the display string for a single rich-text run,
-// picking the right payload shape (mention / equation / text) and
-// applying the run's annotations. Kept unexported so it can evolve
-// freely; RenderRichText is the stable entry point.
-func renderSegment(r *RichText) string {
-	raw := segmentPayload(r)
+// renderSegmentWithResolver produces the display string for a single
+// rich-text run, picking the right payload shape (mention / equation /
+// text), applying the run's annotations, and consulting the resolver
+// for page mentions.
+func renderSegmentWithResolver(ctx context.Context, r *RichText, resolver PageTitleResolver) string {
+	raw := segmentPayloadWithResolver(ctx, r, resolver)
 	return applyAnnotations(raw, r.Annotations)
 }
 
 // segmentPayload returns the bare, unannotated content of a rich-text
-// run. For mentions it expands into a display marker; for equations it
-// wraps in "$…$"; for everything else it uses PlainText (or Text.Content
-// as a fallback when PlainText is empty, which can happen on inputs the
-// caller constructed by hand for write paths).
+// run without consulting any resolver. Callers that want page-title
+// expansion should use segmentPayloadWithResolver. Kept as a thin
+// wrapper so non-rendering helpers (PlainRichText) can continue to work
+// without a context.
 func segmentPayload(r *RichText) string {
+	return segmentPayloadWithResolver(context.Background(), r, NoPageResolver{})
+}
+
+// segmentPayloadWithResolver is segmentPayload with page-mention title
+// resolution. For mentions it expands into a display marker; for
+// equations it wraps in "$…$"; for everything else it uses PlainText
+// (or Text.Content as a fallback when PlainText is empty, which can
+// happen on inputs the caller constructed by hand for write paths).
+func segmentPayloadWithResolver(ctx context.Context, r *RichText, resolver PageTitleResolver) string {
 	// Mention — type discriminator selects the sub-shape.
 	if r.Type == "mention" && r.Mention != nil {
-		return renderMention(r.Mention, r.PlainText)
+		return renderMention(ctx, r.Mention, r.PlainText, resolver)
 	}
 	// Inline equation.
 	if r.Type == "equation" && r.Equation != nil {
@@ -74,8 +108,10 @@ func segmentPayload(r *RichText) string {
 // renderMention produces a compact marker for a mention segment. The
 // fallback parameter is the run's PlainText — Notion populates it with a
 // pre-rendered string (e.g. "@Jordan Ryan") that we use when the typed
-// sub-object is missing or ambiguous.
-func renderMention(m *Mention, fallback string) string {
+// sub-object is missing or ambiguous. The resolver is consulted on
+// page mentions; any error (or empty title) falls back to the legacy
+// "[page:<id>]" marker.
+func renderMention(ctx context.Context, m *Mention, fallback string, resolver PageTitleResolver) string {
 	switch m.Type {
 	case "user":
 		if m.User != nil {
@@ -88,6 +124,11 @@ func renderMention(m *Mention, fallback string) string {
 		}
 	case "page":
 		if m.Page != nil && m.Page.ID != "" {
+			if resolver != nil {
+				if title, err := resolver.ResolvePageTitle(ctx, m.Page.ID); err == nil && title != "" {
+					return "[" + title + "]"
+				}
+			}
 			return "[page:" + m.Page.ID + "]"
 		}
 	case "database":
