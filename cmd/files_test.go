@@ -9,15 +9,12 @@ import (
 	"testing"
 
 	"notioncli/utils"
+
+	"github.com/fatih/color"
 )
 
-// findBlocksSubcommand and findPagesSubcommand are defined in blocks_test.go
-// and pages_test.go respectively — this file reuses them without redeclaring.
-
 // TestFiles_Cmd_Registered asserts the four new subcommands (two under
-// blocks, two under pages) are wired into rootCmd. The cmd-layer gap check
-// looks for Test functions per exported command — this single test covers
-// all four to keep the test file flat.
+// blocks, two under pages) are wired into rootCmd.
 func TestFiles_Cmd_Registered(t *testing.T) {
 	wantBlocks := []string{"add-image", "add-file"}
 	for _, name := range wantBlocks {
@@ -34,9 +31,6 @@ func TestFiles_Cmd_Registered(t *testing.T) {
 }
 
 // TestFiles_Cmd_AddFileHasNameFlag locks in the --name flag on add-file.
-// The flag exists so callers can override the displayed filename without
-// renaming the local file; a regression that dropped it would silently
-// change behavior.
 func TestFiles_Cmd_AddFileHasNameFlag(t *testing.T) {
 	addFile := findBlocksSubcommand(t, "add-file")
 	if addFile.Flags().Lookup("name") == nil {
@@ -44,18 +38,9 @@ func TestFiles_Cmd_AddFileHasNameFlag(t *testing.T) {
 	}
 }
 
-// TestFiles_NewFileClient_Cmd_ReturnsErrMissingAPIKey drives the cmd-layer
-// helper directly. When NOTION_API_KEY resolves empty the helper must
-// surface utils.ErrMissingAPIKey so operators get a configuration-specific
-// error (consistent with newPageClient). SetAPIConfig calls os.Exit when
-// the env var is unset, so we set it to a placeholder then clear it to
-// the empty string — which passes SetAPIConfig but trips the emptiness
-// check in newFileClient.
+// TestFiles_NewFileClient_Cmd_ReturnsErrMissingAPIKey drives the
+// cmd-layer helper directly.
 func TestFiles_NewFileClient_Cmd_ReturnsErrMissingAPIKey(t *testing.T) {
-	// Env scaffolding: SetAPIConfig needs a loadable .env, HOME, and the
-	// two required env vars. We set NOTION_API_KEY to "" explicitly —
-	// LookupEnv returns ok=true for empty values, so SetAPIConfig returns
-	// ("", pageID) and newFileClient's emptiness check fires.
 	emptyCwd := t.TempDir()
 	emptyHome := t.TempDir()
 	if err := os.WriteFile(filepath.Join(emptyCwd, ".env"), []byte(""), 0o600); err != nil {
@@ -87,10 +72,8 @@ func TestFiles_NewFileClient_Cmd_ReturnsErrMissingAPIKey(t *testing.T) {
 	}
 }
 
-// runFilesCmd is a tiny helper that runs a files-related subcommand
-// through rootCmd with its full arg list, captures stdout+stderr into buf,
-// and returns whatever cobra's Execute returned. RunE errors surface
-// through the return, not via cmd.SetErr, so callers assert on both.
+// runFilesCmd runs a files-related subcommand through rootCmd and
+// returns cobra's Execute error plus the color output buffer.
 func runFilesCmd(t *testing.T, args []string) (string, error) {
 	t.Helper()
 	var buf bytes.Buffer
@@ -98,21 +81,29 @@ func runFilesCmd(t *testing.T, args []string) (string, error) {
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
 	rootCmd.SetArgs(args)
+
+	// Capture fatih/color output so the happy-path "Uploaded..." line
+	// is visible to assertions.
+	origColorOut := color.Output
+	origColorErr := color.Error
+	color.Output = &buf
+	color.Error = &buf
+	t.Cleanup(func() {
+		color.Output = origColorOut
+		color.Error = origColorErr
+	})
+
 	err := rootCmd.Execute()
 	return buf.String(), err
 }
 
-// TestFiles_Cmd_DispatchReturnsStub is the end-to-end smoke test for every
-// new subcommand. Each row dispatches through rootCmd with valid args
-// (including a real on-disk file), the env fully wired, and asserts the
-// stub sentinel bubbles up with the right prefix. This ensures the cmd
-// layer threads the error cleanly (no silent swallow) and that the RunE
-// return value carries #11 so users see it in their terminal.
-func TestFiles_Cmd_DispatchReturnsStub(t *testing.T) {
-	// Shared env + filesystem setup for every row.
-	withCmdEnv(t)
+// TestFiles_Cmd_DispatchHappyPath is the end-to-end smoke test for
+// every subcommand: each runs the full two-step upload flow against the
+// cmd mock server and prints the expected "Uploaded ..." / "Set ..."
+// line with the file ID.
+func TestFiles_Cmd_DispatchHappyPath(t *testing.T) {
+	_ = withCmdEnv(t)
 
-	// A small real file that passes validateUploadPath; 1 byte suffices.
 	tmp := t.TempDir()
 	filePath := filepath.Join(tmp, "hello.png")
 	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
@@ -120,68 +111,43 @@ func TestFiles_Cmd_DispatchReturnsStub(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		args       []string
-		wantPrefix string
+		name     string
+		args     []string
+		wantFrag string
 	}{
-		{
-			name:       "blocks add-image",
-			args:       []string{"blocks", "add-image", filePath},
-			wantPrefix: "add-image",
-		},
-		{
-			name:       "blocks add-file",
-			args:       []string{"blocks", "add-file", filePath},
-			wantPrefix: "add-file",
-		},
-		{
-			name:       "blocks add-file with --name",
-			args:       []string{"blocks", "add-file", filePath, "--name", "nice-name.txt"},
-			wantPrefix: "add-file",
-		},
-		{
-			name:       "pages set-icon",
-			args:       []string{"pages", "set-icon", "page-abc", filePath},
-			wantPrefix: "set-icon",
-		},
-		{
-			name:       "pages set-cover",
-			args:       []string{"pages", "set-cover", "page-abc", filePath},
-			wantPrefix: "set-cover",
-		},
+		{"blocks add-image", []string{"blocks", "add-image", filePath}, "Uploaded image"},
+		{"blocks add-file", []string{"blocks", "add-file", filePath}, "Uploaded file"},
+		{"blocks add-file with --name", []string{"blocks", "add-file", filePath, "--name", "nice-name.txt"}, "nice-name.txt"},
+		{"pages set-icon", []string{"pages", "set-icon", "page-abc", filePath}, "Set icon on page"},
+		{"pages set-cover", []string{"pages", "set-cover", "page-abc", filePath}, "Set cover on page"},
 	}
 
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := runFilesCmd(t, tt.args)
-			if err == nil {
-				t.Fatalf("%s: want error, got nil", tt.name)
+			// Reset --name flag between rows since it's package-level.
+			blocksAddFileName = ""
+			out, err := runFilesCmd(t, tt.args)
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v (output=%s)", tt.name, err, out)
 			}
-			if !errors.Is(err, utils.ErrFileUploadNotSupported) {
-				t.Errorf("%s: want errors.Is ErrFileUploadNotSupported, got %v", tt.name, err)
+			if !strings.Contains(out, tt.wantFrag) {
+				t.Errorf("%s: output missing %q:\n%s", tt.name, tt.wantFrag, out)
 			}
-			if !strings.HasPrefix(err.Error(), tt.wantPrefix+":") {
-				t.Errorf("%s: want error to start with %q, got %v", tt.name, tt.wantPrefix+":", err)
-			}
-			if !strings.Contains(err.Error(), "#11") {
-				t.Errorf("%s: want error to mention #11, got %v", tt.name, err)
+			if !strings.Contains(out, "cmd-file-id") {
+				t.Errorf("%s: output missing uploaded file id:\n%s", tt.name, out)
 			}
 		})
 	}
 }
 
-// TestFiles_Cmd_Dispatch_PathValidation confirms the cmd layer surfaces
-// per-path validation errors (missing file, directory, oversize) rather
-// than the stub sentinel. Operators who typo a path need the specific
-// error, not the "will be enabled by #11" noise.
+// TestFiles_Cmd_Dispatch_PathValidation confirms per-path validation
+// errors surface directly (not buried behind an auth error).
 func TestFiles_Cmd_Dispatch_PathValidation(t *testing.T) {
-	withCmdEnv(t)
+	_ = withCmdEnv(t)
 
 	dir := t.TempDir()
-	// Missing path.
 	missing := filepath.Join(dir, "nope.bin")
-	// Directory path.
 	subdir := filepath.Join(dir, "sub")
 	if err := os.Mkdir(subdir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -192,39 +158,19 @@ func TestFiles_Cmd_Dispatch_PathValidation(t *testing.T) {
 		args     []string
 		wantFrag string
 	}{
-		{
-			name:     "add-image missing path",
-			args:     []string{"blocks", "add-image", missing},
-			wantFrag: "nope.bin",
-		},
-		{
-			name:     "add-file directory",
-			args:     []string{"blocks", "add-file", subdir},
-			wantFrag: "directory",
-		},
-		{
-			name:     "set-icon missing path",
-			args:     []string{"pages", "set-icon", "page-abc", missing},
-			wantFrag: "nope.bin",
-		},
-		{
-			name:     "set-cover directory",
-			args:     []string{"pages", "set-cover", "page-abc", subdir},
-			wantFrag: "directory",
-		},
+		{"add-image missing path", []string{"blocks", "add-image", missing}, "nope.bin"},
+		{"add-file directory", []string{"blocks", "add-file", subdir}, "directory"},
+		{"set-icon missing path", []string{"pages", "set-icon", "page-abc", missing}, "nope.bin"},
+		{"set-cover directory", []string{"pages", "set-cover", "page-abc", subdir}, "directory"},
 	}
 
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			blocksAddFileName = ""
 			_, err := runFilesCmd(t, tt.args)
 			if err == nil {
 				t.Fatalf("%s: want error, got nil", tt.name)
-			}
-			// Validation errors must not be wrapped as the stub
-			// sentinel — they are a separate failure class.
-			if errors.Is(err, utils.ErrFileUploadNotSupported) {
-				t.Errorf("%s: validation error should not wrap ErrFileUploadNotSupported, got %v", tt.name, err)
 			}
 			if !strings.Contains(err.Error(), tt.wantFrag) {
 				t.Errorf("%s: want error to contain %q, got %v", tt.name, tt.wantFrag, err)
@@ -234,27 +180,23 @@ func TestFiles_Cmd_Dispatch_PathValidation(t *testing.T) {
 }
 
 // TestFiles_Cmd_Dispatch_ArgValidation asserts cobra's positional-arg
-// constraints for each command. add-image/add-file require exactly one
-// arg, set-icon/set-cover require exactly two. A missing path must return
-// a cobra usage error, not run the stub.
+// constraints for each command.
 func TestFiles_Cmd_Dispatch_ArgValidation(t *testing.T) {
-	withCmdEnv(t)
+	_ = withCmdEnv(t)
 
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{name: "add-image no args", args: []string{"blocks", "add-image"}},
-		{name: "add-file no args", args: []string{"blocks", "add-file"}},
-		{name: "set-icon one arg", args: []string{"pages", "set-icon", "page-abc"}},
-		{name: "set-cover one arg", args: []string{"pages", "set-cover", "page-abc"}},
+		{"add-image no args", []string{"blocks", "add-image"}},
+		{"add-file no args", []string{"blocks", "add-file"}},
+		{"set-icon one arg", []string{"pages", "set-icon", "page-abc"}},
+		{"set-cover one arg", []string{"pages", "set-cover", "page-abc"}},
 	}
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			// Silence cobra's usage dump by pointing the command
-			// output at a throwaway buffer; we only care about
-			// the returned error.
+			blocksAddFileName = ""
 			_, err := runFilesCmd(t, tt.args)
 			if err == nil {
 				t.Fatalf("%s: want cobra arg error, got nil", tt.name)

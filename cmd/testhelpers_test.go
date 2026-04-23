@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -91,6 +92,30 @@ func cmdMockServer(t *testing.T) *httptest.Server {
 				ID:     "view-updated-id",
 				Name:   "Renamed",
 				Type:   "table",
+			})
+
+		// POST /file_uploads: step 1 of the upload flow.
+		case r.Method == http.MethodPost && r.URL.Path == "/file_uploads":
+			// Echo the filename from the JSON body so step 2's
+			// mock response reuses the request's filename field.
+			var fu utils.FileUploadRequest
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &fu)
+			upload := "http://" + r.Host + "/file_uploads/cmd-file-id/send"
+			writeJSON(w, utils.FileUploadResponse{
+				Object:    "file_upload",
+				ID:        "cmd-file-id",
+				UploadURL: upload,
+				Status:    "pending",
+				Filename:  fu.Filename,
+			})
+
+		// POST /file_uploads/{id}/send: step 2.
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/file_uploads/") && strings.HasSuffix(r.URL.Path, "/send"):
+			writeJSON(w, utils.FileUploadResponse{
+				Object: "file_upload",
+				ID:     "cmd-file-id",
+				Status: "uploaded",
 			})
 
 		// GET children: default page has one to_do item.
