@@ -151,24 +151,28 @@ func (f *FileClient) checkAuth() error {
 // All failure paths return errors suitable for human display — they name the
 // path and cite the size cap in bytes so an operator can act on them without
 // reading source.
-func validateUploadPath(path string) (os.FileInfo, error) {
+//
+// Returns only error: #11's real implementation will re-stat the file when
+// it needs content_length for the multipart PUT, so there is no callsite
+// that benefits from an os.FileInfo return today.
+func validateUploadPath(path string) error {
 	if path == "" {
-		return nil, fmt.Errorf("file upload: path is required")
+		return fmt.Errorf("file upload: path is required")
 	}
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("file upload: stat %q: %w", path, err)
+		return fmt.Errorf("file upload: stat %q: %w", path, err)
 	}
 	if info.IsDir() {
-		return nil, fmt.Errorf("file upload: %q is a directory, not a file", path)
+		return fmt.Errorf("file upload: %q is a directory, not a file", path)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("file upload: %q is not a regular file", path)
+		return fmt.Errorf("file upload: %q is not a regular file", path)
 	}
 	if info.Size() > MaxFileUploadBytes {
-		return nil, fmt.Errorf("file upload: %q is %d bytes, exceeds client cap of %d bytes", path, info.Size(), MaxFileUploadBytes)
+		return fmt.Errorf("file upload: %q is %d bytes, exceeds client cap of %d bytes", path, info.Size(), MaxFileUploadBytes)
 	}
-	return info, nil
+	return nil
 }
 
 // Upload is the primary entry point for a file upload. It validates the path
@@ -190,7 +194,7 @@ func (f *FileClient) Upload(ctx context.Context, path string) (*FileRef, error) 
 	if err := f.checkAuth(); err != nil {
 		return nil, fmt.Errorf("upload file: %w", err)
 	}
-	if _, err := validateUploadPath(path); err != nil {
+	if err := validateUploadPath(path); err != nil {
 		return nil, err
 	}
 	// ctx is accepted for API stability; the real implementation will thread
