@@ -6,6 +6,7 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 )
@@ -75,6 +76,15 @@ type UpdateDatabaseRequest struct {
 	Properties map[string]DatabaseProperty `json:"properties,omitempty"`
 }
 
+// QueryResponse is a single page of database query results. Mirrors the
+// envelope returned by POST /v1/databases/{id}/query.
+type QueryResponse struct {
+	Object     string `json:"object"`
+	Results    []Page `json:"results"`
+	NextCursor string `json:"next_cursor"`
+	HasMore    bool   `json:"has_more"`
+}
+
 // titleRichText returns a minimal Notion rich-text array carrying the given
 // plain-text title. Used by Create/Update to turn a --title flag into the
 // payload shape Notion expects on the "title" key of the request body.
@@ -108,6 +118,78 @@ func (d *DatabaseClient) Get(ctx context.Context, id string) (*Database, error) 
 		return nil, fmt.Errorf("get database: %w", err)
 	}
 	return &db, nil
+}
+
+// Query performs a single POST /v1/databases/{id}/query call and returns the
+// immediate page of results. filter and sort are passed through untouched as
+// the Notion API's filter and sorts keys — callers supply these as raw JSON
+// read from a file so the full Notion filter/sort surface is accessible
+// without this package modeling every option.
+//
+// cursor is the start_cursor to resume from; pass "" for the first page.
+// pageSize is the Notion API's page_size (1-100, 0 means server default).
+func (d *DatabaseClient) Query(ctx context.Context, id string, filter, sort json.RawMessage, cursor string, pageSize int) (*QueryResponse, error) {
+	if err := d.checkAuth(); err != nil {
+		return nil, fmt.Errorf("query database: %w", err)
+	}
+	if id == "" {
+		return nil, fmt.Errorf("query database: id is required")
+	}
+
+	body := map[string]interface{}{}
+	if len(filter) > 0 {
+		body["filter"] = filter
+	}
+	if len(sort) > 0 {
+		body["sorts"] = sort
+	}
+	if cursor != "" {
+		body["start_cursor"] = cursor
+	}
+	if pageSize > 0 {
+		body["page_size"] = pageSize
+	}
+
+	req, err := d.c.newRequest(ctx, http.MethodPost, "/databases/"+id+"/query", body)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := d.c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("query database: %w", err)
+	}
+	var out QueryResponse
+	if err := decodeInto(resp, &out); err != nil {
+		return nil, fmt.Errorf("query database: %w", err)
+	}
+	return &out, nil
+}
+
+// QueryAll walks pagination until the server reports HasMore=false or the
+// supplied limit is reached. A non-positive limit means "return everything".
+// When limit is positive, the returned slice is truncated to exactly limit
+// entries (or fewer if the server ran out first). Mid-pagination errors are
+// wrapped with the 1-based page number so callers can see how far the walk
+// got before failing. Mirrors SearchClient.SearchAll's pagination shape.
+func (d *DatabaseClient) QueryAll(ctx context.Context, id string, filter, sort json.RawMessage, limit int) ([]Page, error) {
+	var all []Page
+	cursor := ""
+	// pageSize is left at the server default (0) for now; callers that need
+	// a specific page size can drop to Query and drive pagination themselves.
+	for pageNum := 1; ; pageNum++ {
+		resp, err := d.Query(ctx, id, filter, sort, cursor, 0)
+		if err != nil {
+			return nil, fmt.Errorf("query database page %d: %w", pageNum, err)
+		}
+		all = append(all, resp.Results...)
+		if limit > 0 && len(all) >= limit {
+			return all[:limit], nil
+		}
+		if !resp.HasMore || resp.NextCursor == "" {
+			return all, nil
+		}
+		cursor = resp.NextCursor
+	}
 }
 
 // Create posts a new database to POST /v1/databases. Parent.PageID is
