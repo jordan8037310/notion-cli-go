@@ -431,7 +431,7 @@ func buildMediaBlock(blockType, text string, cfg blockConfig) (map[string]interf
 	} else {
 		url := mediaURL(text, cfg)
 		if url == "" {
-			return nil, fmt.Errorf("%s block requires a URL or a file upload id", blockType)
+			return nil, fmt.Errorf("%s block requires a URL (positional arg or --url) or a --file-upload-id", blockType)
 		}
 		inner["type"] = "external"
 		inner["external"] = map[string]interface{}{"url": url}

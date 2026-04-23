@@ -742,6 +742,11 @@ func TestWithLanguage(t *testing.T) {
 	}
 }
 
+// TestIsAddableBlockType is the gap-gate mirror for IsAddableBlockType. The
+// coverage checker looks for a Test<FuncName> that matches the exported
+// function exactly, so this minimal smoke test satisfies the gate even though
+// TestBlockTypes_IsAddableBlockType above covers the same surface in depth.
+// Do not merge the two — the singular-named test is the gap-gate hook.
 func TestIsAddableBlockType(t *testing.T) {
 	if !IsAddableBlockType("paragraph") {
 		t.Error("paragraph should be addable")
