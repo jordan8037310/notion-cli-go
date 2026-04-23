@@ -43,7 +43,7 @@ type Database struct {
 	ID             string                 `json:"id"`
 	CreatedTime    string                 `json:"created_time"`
 	LastEditedTime string                 `json:"last_edited_time"`
-	Archived       bool                   `json:"archived"`
+	InTrash        bool                   `json:"in_trash"`
 	URL            string                 `json:"url"`
 	Title          []RichText             `json:"title"`
 	Parent         PageParent             `json:"parent"`

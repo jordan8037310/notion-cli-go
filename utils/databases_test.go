@@ -127,7 +127,7 @@ func writeJSONDatabase(w http.ResponseWriter, id, title string) {
 		"id":               id,
 		"created_time":     "2026-04-22T10:00:00.000Z",
 		"last_edited_time": "2026-04-22T10:00:00.000Z",
-		"archived":         false,
+		"in_trash":         false,
 		"url":              "https://notion.so/" + id,
 		"title": []map[string]interface{}{
 			{

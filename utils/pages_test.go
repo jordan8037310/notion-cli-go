@@ -25,7 +25,10 @@ type pagesMockServer struct {
 	mu       chan struct{} // simple mutex via buffered chan
 	notFound bool
 
-	archiveStates map[string]bool
+	// inTrashStates tracks the per-page `in_trash` flag the mock has
+	// observed via PATCH bodies. The underlying wire key was renamed
+	// from `archived` to `in_trash` in Notion-Version 2026-03-11.
+	inTrashStates map[string]bool
 
 	// For Duplicate: count of /blocks/{id}/children GETs and PATCHes.
 	blocksGet   int64
@@ -42,7 +45,7 @@ func newPagesMockServer(t *testing.T) *pagesMockServer {
 	t.Helper()
 	p := &pagesMockServer{
 		mu:            make(chan struct{}, 1),
-		archiveStates: map[string]bool{},
+		inTrashStates: map[string]bool{},
 	}
 	p.mu <- struct{}{}
 	p.srv = httptest.NewServer(http.HandlerFunc(p.handle))
@@ -91,13 +94,13 @@ func (p *pagesMockServer) handle(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/pages/"):
 		id := strings.TrimPrefix(r.URL.Path, "/pages/")
-		archived := false
+		inTrash := false
 		p.lock()
-		if v, ok := p.archiveStates[id]; ok {
-			archived = v
+		if v, ok := p.inTrashStates[id]; ok {
+			inTrash = v
 		}
 		p.unlock()
-		writeJSONPage(w, id, archived, "Source title")
+		writeJSONPage(w, id, inTrash, "Source title")
 
 	case r.Method == http.MethodPost && r.URL.Path == "/pages":
 		writeJSONPage(w, "newPageID", false, "Created")
@@ -105,13 +108,13 @@ func (p *pagesMockServer) handle(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/pages/"):
 		id := strings.TrimPrefix(r.URL.Path, "/pages/")
 		if body != nil {
-			if v, ok := body["archived"].(bool); ok {
+			if v, ok := body["in_trash"].(bool); ok {
 				p.lock()
-				p.archiveStates[id] = v
+				p.inTrashStates[id] = v
 				p.unlock()
 			}
 		}
-		writeJSONPage(w, id, p.archiveStates[id], "Updated")
+		writeJSONPage(w, id, p.inTrashStates[id], "Updated")
 
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/children"):
 		atomic.AddInt64(&p.blocksGet, 1)
@@ -127,13 +130,13 @@ func (p *pagesMockServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func writeJSONPage(w http.ResponseWriter, id string, archived bool, title string) {
+func writeJSONPage(w http.ResponseWriter, id string, inTrash bool, title string) {
 	page := map[string]interface{}{
 		"object":           "page",
 		"id":               id,
 		"created_time":     "2026-04-22T10:00:00.000Z",
 		"last_edited_time": "2026-04-22T10:00:00.000Z",
-		"archived":         archived,
+		"in_trash":         inTrash,
 		"url":              "https://notion.so/" + id,
 		"parent":           map[string]interface{}{"type": "page_id", "page_id": "parentID"},
 		"properties": map[string]interface{}{
@@ -277,8 +280,38 @@ func TestUpdate_TitleOnly(t *testing.T) {
 	if _, ok := calls[0].body["properties"]; !ok {
 		t.Error("expected title-only update to include properties")
 	}
+	// Guard against regressing the 2026-03-11 wire format on either
+	// the old key (archived) or the new one (in_trash) — neither
+	// should be present when no trash flag was supplied.
 	if _, ok := calls[0].body["archived"]; ok {
-		t.Error("title-only update should not include archived")
+		t.Error("title-only update must not include archived (removed in 2026-03-11)")
+	}
+	if _, ok := calls[0].body["in_trash"]; ok {
+		t.Error("title-only update should not include in_trash")
+	}
+}
+
+// TestUpdate_InTrashEmitsNewKey pins the PATCH body from UpdatePageRequest
+// with an InTrash pointer set. Notion-Version 2026-03-11 renamed the field
+// from `archived` to `in_trash`; this test fails hard if we ever silently
+// regress the struct tag or the body composition.
+func TestUpdate_InTrashEmitsNewKey(t *testing.T) {
+	m := newPagesMockServer(t)
+	pc := NewPageClient(m.client())
+
+	tr := true
+	if _, err := pc.Update(context.Background(), "pageID", UpdatePageRequest{InTrash: &tr}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	calls := m.callsSnapshot()
+	if len(calls) != 1 {
+		t.Fatalf("len(calls)=%d want 1", len(calls))
+	}
+	if calls[0].body["in_trash"] != true {
+		t.Errorf("expected in_trash=true in PATCH body, got %v", calls[0].body)
+	}
+	if _, ok := calls[0].body["archived"]; ok {
+		t.Errorf("legacy archived key must not appear in PATCH body, got %v", calls[0].body)
 	}
 }
 
@@ -307,8 +340,8 @@ func TestArchive_Unarchive_RoundTrip(t *testing.T) {
 		t.Fatalf("Archive: %v", err)
 	}
 	m.lock()
-	if !m.archiveStates["pageID"] {
-		t.Error("expected archived=true after Archive")
+	if !m.inTrashStates["pageID"] {
+		t.Error("expected in_trash=true after Archive")
 	}
 	m.unlock()
 
@@ -316,8 +349,8 @@ func TestArchive_Unarchive_RoundTrip(t *testing.T) {
 		t.Fatalf("Unarchive: %v", err)
 	}
 	m.lock()
-	if m.archiveStates["pageID"] {
-		t.Error("expected archived=false after Unarchive")
+	if m.inTrashStates["pageID"] {
+		t.Error("expected in_trash=false after Unarchive")
 	}
 	m.unlock()
 
@@ -325,11 +358,21 @@ func TestArchive_Unarchive_RoundTrip(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("len(calls)=%d want 2", len(calls))
 	}
-	if calls[0].body["archived"] != true {
-		t.Error("first call should set archived=true")
+	// 2026-03-11 renamed the PATCH key from `archived` to `in_trash`.
+	// Assert the new key is present with the expected boolean AND the
+	// old key is absent — this is what catches a regression where we
+	// accidentally fall back to the pre-2026-03-11 shape.
+	if calls[0].body["in_trash"] != true {
+		t.Errorf("first call should set in_trash=true, body=%v", calls[0].body)
 	}
-	if calls[1].body["archived"] != false {
-		t.Error("second call should set archived=false")
+	if _, ok := calls[0].body["archived"]; ok {
+		t.Errorf("first call must not include legacy archived key, body=%v", calls[0].body)
+	}
+	if calls[1].body["in_trash"] != false {
+		t.Errorf("second call should set in_trash=false, body=%v", calls[1].body)
+	}
+	if _, ok := calls[1].body["archived"]; ok {
+		t.Errorf("second call must not include legacy archived key, body=%v", calls[1].body)
 	}
 }
 
