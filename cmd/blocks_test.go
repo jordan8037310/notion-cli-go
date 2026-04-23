@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -163,6 +165,232 @@ func TestBlocksAddDispatch(t *testing.T) {
 
 	if atomic.LoadInt64(&patched) == 0 {
 		t.Error("blocks add did not PATCH /blocks/pageID/children")
+	}
+}
+
+// TestBlocksAdd_ExtendedFlags verifies the extended --url / --caption /
+// --file-upload-id / --language flags are registered and that --url defaults
+// to empty (the positional text remains the default URL source).
+func TestBlocksAdd_ExtendedFlags(t *testing.T) {
+	add := findBlocksSubcommand(t, "add")
+
+	for _, tc := range []struct {
+		flag string
+		want string
+	}{
+		{"url", ""},
+		{"caption", ""},
+		{"file-upload-id", ""},
+		{"language", ""},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			f := add.Flag(tc.flag)
+			if f == nil {
+				t.Fatalf("blocks add: --%s flag not registered", tc.flag)
+			}
+			if f.DefValue != tc.want {
+				t.Errorf("blocks add: --%s default = %q, want %q", tc.flag, f.DefValue, tc.want)
+			}
+			if f.Value.Type() != "string" {
+				t.Errorf("blocks add: --%s type = %q, want string", tc.flag, f.Value.Type())
+			}
+		})
+	}
+}
+
+// resetBlocksAddFlags clears every package-level flag variable the add
+// command binds to. Cobra keeps these alive across rootCmd.Execute calls, so
+// tests that flip --url or --file-upload-id would leak those settings into
+// later tests without this reset.
+func resetBlocksAddFlags() {
+	blockType = ""
+	blockURL = ""
+	blockCaption = ""
+	blockFileID = ""
+	blockLanguage = ""
+}
+
+// TestBlocksAddDispatch_Image runs `blocks add https://... -t image` and
+// asserts the wire-level JSON has an image.external.url payload.
+func TestBlocksAddDispatch_Image(t *testing.T) {
+	srv := withCmdEnv(t)
+
+	var captured []byte
+	var patched int64
+	origHandler := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/blocks/pageID/children") {
+			body, _ := io.ReadAll(r.Body)
+			captured = body
+			atomic.AddInt64(&patched, 1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+			return
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+
+	resetBlocksAddFlags()
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "add", "https://example.com/p.png", "-t", "image"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(blocks add image): %v", err)
+	}
+
+	if atomic.LoadInt64(&patched) == 0 {
+		t.Fatal("blocks add image did not PATCH children endpoint")
+	}
+	var parsed struct {
+		Children []struct {
+			Type  string `json:"type"`
+			Image struct {
+				Type     string `json:"type"`
+				External struct {
+					URL string `json:"url"`
+				} `json:"external"`
+			} `json:"image"`
+		} `json:"children"`
+	}
+	if err := json.Unmarshal(captured, &parsed); err != nil {
+		t.Fatalf("unmarshal captured: %v", err)
+	}
+	if len(parsed.Children) != 1 {
+		t.Fatalf("want 1 child, got %d", len(parsed.Children))
+	}
+	child := parsed.Children[0]
+	if child.Type != "image" || child.Image.Type != "external" || child.Image.External.URL != "https://example.com/p.png" {
+		t.Errorf("unexpected child payload: %+v", child)
+	}
+}
+
+// TestBlocksAddDispatch_Equation exercises the equation path through the
+// cmd layer and asserts the expression lands in the PATCH body.
+func TestBlocksAddDispatch_Equation(t *testing.T) {
+	srv := withCmdEnv(t)
+
+	var captured []byte
+	origHandler := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/blocks/pageID/children") {
+			captured, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+			return
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+
+	resetBlocksAddFlags()
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "add", "E=mc^2", "-t", "equation"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(blocks add equation): %v", err)
+	}
+
+	var parsed struct {
+		Children []struct {
+			Equation struct {
+				Expression string `json:"expression"`
+			} `json:"equation"`
+		} `json:"children"`
+	}
+	if err := json.Unmarshal(captured, &parsed); err != nil {
+		t.Fatalf("unmarshal captured: %v", err)
+	}
+	if len(parsed.Children) != 1 || parsed.Children[0].Equation.Expression != "E=mc^2" {
+		t.Errorf("expression not propagated: %s", captured)
+	}
+}
+
+// TestBlocksAddDispatch_BookmarkWithURLFlag confirms --url overrides the
+// positional text as the URL source for bookmark blocks.
+func TestBlocksAddDispatch_BookmarkWithURLFlag(t *testing.T) {
+	srv := withCmdEnv(t)
+
+	var captured []byte
+	origHandler := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/blocks/pageID/children") {
+			captured, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+			return
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+
+	resetBlocksAddFlags()
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{
+		"blocks", "add", "home page", "-t", "bookmark",
+		"--url", "https://example.com",
+		"--caption", "the site",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(blocks add bookmark): %v", err)
+	}
+
+	var parsed struct {
+		Children []struct {
+			Bookmark struct {
+				URL     string `json:"url"`
+				Caption []struct {
+					Text struct {
+						Content string `json:"content"`
+					} `json:"text"`
+				} `json:"caption"`
+			} `json:"bookmark"`
+		} `json:"children"`
+	}
+	if err := json.Unmarshal(captured, &parsed); err != nil {
+		t.Fatalf("unmarshal captured: %v", err)
+	}
+	if len(parsed.Children) != 1 {
+		t.Fatalf("want 1 child, got %d", len(parsed.Children))
+	}
+	bk := parsed.Children[0].Bookmark
+	if bk.URL != "https://example.com" {
+		t.Errorf("bookmark url = %q, want https://example.com", bk.URL)
+	}
+	if len(bk.Caption) != 1 || bk.Caption[0].Text.Content != "the site" {
+		t.Errorf("caption not propagated: %+v", bk.Caption)
+	}
+}
+
+// TestBlocksAdd_RejectsNonAddable asserts that `blocks add … -t table`
+// surfaces a human-readable error and does NOT issue a PATCH.
+func TestBlocksAdd_RejectsNonAddable(t *testing.T) {
+	srv := withCmdEnv(t)
+
+	var patched int64
+	origHandler := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			atomic.AddInt64(&patched, 1)
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+
+	resetBlocksAddFlags()
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "add", "ignored", "-t", "table"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute returned err: %v (expected swallowed)", err)
+	}
+	if atomic.LoadInt64(&patched) != 0 {
+		t.Error("blocks add -t table should not PATCH the API")
 	}
 }
 
