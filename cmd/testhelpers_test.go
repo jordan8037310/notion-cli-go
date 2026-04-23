@@ -65,6 +65,15 @@ func cmdMockServer(t *testing.T) *httptest.Server {
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		// GET /teams: default response exercises pagination-free list.
+		case r.Method == http.MethodGet && r.URL.Path == "/teams":
+			writeJSON(w, utils.TeamList{
+				Object: "list",
+				Results: []utils.Team{
+					{Object: "team", ID: "team-1", Name: "Marketing"},
+				},
+			})
+
 		// GET children: default page has one to_do item.
 		case r.Method == http.MethodGet && r.URL.Path == "/blocks/pageID/children":
 			writeJSON(w, utils.BlockList{Results: []utils.Block{

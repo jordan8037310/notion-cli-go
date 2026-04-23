@@ -2,12 +2,8 @@ package cmd
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-
-	"notioncli/utils"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -51,33 +47,47 @@ func TestTeamsListExists(t *testing.T) {
 	}
 }
 
-// TestTeamsListDispatch_SurfacesStubError runs `notioncli teams list`
-// and asserts the osExit recorder fires with code 1 (the stub path).
-// The purpose is to confirm the CLI wires the stub error cleanly rather
-// than panicking.
-func TestTeamsListDispatch_SurfacesStubError(t *testing.T) {
-	// Env scaffolding: teams list calls utils.SetAPIConfig which needs
-	// env vars and a loadable .env.
-	emptyCwd := t.TempDir()
-	emptyHome := t.TempDir()
-	if err := os.WriteFile(filepath.Join(emptyCwd, ".env"), []byte(""), 0o600); err != nil {
-		t.Fatalf("write .env: %v", err)
-	}
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	if err := os.Chdir(emptyCwd); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(orig) })
+// TestTeamsListDispatch_HappyPath runs `notioncli teams list` against a
+// mock server and asserts the output lists each team (id + name) in the
+// expected order. No osExit call on the happy path.
+func TestTeamsListDispatch_HappyPath(t *testing.T) {
+	_ = withCmdEnv(t)
 
-	t.Setenv("HOME", emptyHome)
-	t.Setenv("NOTION_API_KEY", "test-key")
-	t.Setenv("NOTION_PAGE_ID", "pageID")
-	t.Setenv("LOCAL_TIMEZONE", "UTC")
+	// Ensure osExit doesn't fire on the happy path — swap a recorder.
+	var exited bool
+	origExit := osExit
+	osExit = func(c int) { exited = true }
+	t.Cleanup(func() { osExit = origExit })
 
-	// Swap osExit so the test binary survives the stub's exit(1).
+	var buf bytes.Buffer
+	resetRootCmdArgs()
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"teams", "list"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(teams list): %v", err)
+	}
+	if exited {
+		t.Errorf("happy path invoked osExit unexpectedly")
+	}
+
+	out := buf.String()
+	for _, frag := range []string{"team-1", "Marketing"} {
+		if !strings.Contains(out, frag) {
+			t.Errorf("teams list output missing %q:\n%s", frag, out)
+		}
+	}
+}
+
+// TestTeamsListDispatch_AuthError asserts that an unconfigured API key
+// surfaces via osExit(1) and the "Error:" color.Red branch, without
+// panicking.
+func TestTeamsListDispatch_AuthError(t *testing.T) {
+	_ = withCmdEnv(t)
+	// Blank out the API key AFTER withCmdEnv so SetAPIConfig returns an
+	// empty string; TeamClient.List then surfaces ErrMissingAPIKey.
+	t.Setenv("NOTION_API_KEY", "")
+
 	var exited bool
 	var code int
 	origExit := osExit
@@ -87,9 +97,7 @@ func TestTeamsListDispatch_SurfacesStubError(t *testing.T) {
 	}
 	t.Cleanup(func() { osExit = origExit })
 
-	// Swap fatih/color's package-level writers so color.Red's output is
-	// observable. Without this the sentinel error lands on os.Stderr and
-	// the #11 assertion below can't see it.
+	// Capture fatih/color output.
 	var out bytes.Buffer
 	origColorOut := color.Output
 	origColorErr := color.Error
@@ -109,26 +117,12 @@ func TestTeamsListDispatch_SurfacesStubError(t *testing.T) {
 	}
 
 	if !exited {
-		t.Fatal("teams list did not invoke osExit; expected stub error path")
+		t.Fatal("teams list with empty API key did not invoke osExit")
 	}
 	if code != 1 {
 		t.Errorf("teams list osExit code = %d, want 1", code)
 	}
-
-	// The stub error must bubble through the CLI surface so operators
-	// who grep for "#11" in the output land on the tracking issue. This
-	// also confirms the discarded-team return at cmd/teams.go isn't
-	// suppressing the sentinel before the color.Red call.
-	if got := out.String(); !strings.Contains(got, "#11") {
-		t.Errorf("teams list output missing #11 marker:\n%s", got)
-	}
-}
-
-// TestTeamsListErrExposedViaUtils is a belt-and-braces check that the
-// cmd layer is paired with the utils stub so a future refactor can't
-// silently drop the error.
-func TestTeamsListErrExposedViaUtils(t *testing.T) {
-	if utils.ErrTeamsNotSupported == nil {
-		t.Fatal("utils.ErrTeamsNotSupported must be non-nil for teams list to have a stable error")
+	if !strings.Contains(out.String(), "api key") {
+		t.Errorf("teams list output missing api-key error:\n%s", out.String())
 	}
 }
