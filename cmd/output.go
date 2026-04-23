@@ -39,9 +39,7 @@ var globalOutput string
 
 // emitJSON encodes v as a JSON document to w and terminates the line with
 // a newline. When globalPretty is set the encoder uses a two-space indent;
-// otherwise the encoder's default compact form is used. Callers pass a
-// slice for list commands (one document), or call emitJSONLine per
-// element for NDJSON.
+// otherwise the encoder's default compact form is used.
 //
 // Note: json.Encoder.Encode writes a trailing newline itself, so callers
 // should not append one.
@@ -56,22 +54,43 @@ func emitJSON(w io.Writer, v interface{}) error {
 	return nil
 }
 
-// emitJSONLines encodes every element of items on its own line (NDJSON).
-// When globalPretty is set each element is pretty-printed but still
-// terminated with a single newline between elements. This is the shape
-// list commands (blocks list, databases query, users list, comments
-// list, search) use when --json is on.
-func emitJSONLines(w io.Writer, items interface{}) error {
+// emitList is the canonical emitter for list commands (blocks list,
+// databases query, users list, teams list, comments list, list, search,
+// etc.). It picks the output shape based on globalPretty:
+//
+//   - globalPretty == false → NDJSON: one compact JSON object per line.
+//     This is the pipe-friendly shape and the default for --json on a
+//     list command. `jq -c` consumers should use this.
+//
+//   - globalPretty == true  → a single indented JSON array containing all
+//     elements. This is the human-inspection shape. Conventionally jq, gh,
+//     and friends do the same: compact NDJSON for piping, pretty array
+//     for eyeballing. Indented NDJSON would be broken (each record spans
+//     multiple lines) so we deliberately do not offer that combination.
+//
+// items must be a slice. Anything else is a programmer error and returns
+// a descriptive error rather than panicking.
+func emitList(w io.Writer, items interface{}) error {
 	// Reflect over a generic []T so every call site can pass the typed
-	// slice it already has without a pre-conversion step. This is only
-	// called during output, so the reflect cost is negligible.
+	// slice it already has without a pre-conversion step. This only runs
+	// during output, so the reflect cost is negligible.
 	rv := reflect.ValueOf(items)
 	if !rv.IsValid() || rv.Kind() != reflect.Slice {
-		return fmt.Errorf("emit json lines: want slice, got %T", items)
+		return fmt.Errorf("emit list: want slice, got %T", items)
 	}
+	if globalPretty {
+		// Single pretty-printed JSON array. emitJSON handles the indent
+		// and trailing newline.
+		return emitJSON(w, items)
+	}
+	// Compact NDJSON. Force the per-element encoder into compact mode by
+	// calling json.Encoder directly (ignoring globalPretty, which is
+	// false here anyway) so this path stays valid NDJSON no matter what
+	// global state callers might have flipped.
+	enc := json.NewEncoder(w)
 	for i := 0; i < rv.Len(); i++ {
-		if err := emitJSON(w, rv.Index(i).Interface()); err != nil {
-			return err
+		if err := enc.Encode(rv.Index(i).Interface()); err != nil {
+			return fmt.Errorf("emit list: %w", err)
 		}
 	}
 	return nil

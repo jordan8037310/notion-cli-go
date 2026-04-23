@@ -143,15 +143,9 @@ var databasesQueryCmd = &cobra.Command{
 			return jsonErrorOr(cmd, fmt.Errorf("query database: %w", err))
 		}
 		if globalJSON {
-			// NDJSON: one JSON object per page row. Matches the shape
-			// printQueryResults already emits when --json was the default.
-			out := cmd.OutOrStdout()
-			for _, p := range results {
-				if err := emitJSON(out, p); err != nil {
-					return jsonErrorOr(cmd, err)
-				}
-			}
-			return nil
+			// emitList picks NDJSON (one object per line) or a pretty
+			// JSON array, depending on --pretty.
+			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), results))
 		}
 		printQueryResults(cmd.OutOrStdout(), results)
 		return nil

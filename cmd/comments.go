@@ -61,15 +61,10 @@ to emit the raw Notion comment objects as NDJSON on stdout.`,
 		}
 
 		if globalJSON {
-			// NDJSON: one comment object per line. Stable typed shape —
-			// json.Encoder re-marshal is lossless here, no Raw needed.
-			out := cmd.OutOrStdout()
-			for _, c := range comments {
-				if err := emitJSON(out, c); err != nil {
-					return jsonErrorOr(cmd, err)
-				}
-			}
-			return nil
+			// emitList picks NDJSON or a pretty JSON array based on
+			// --pretty. Stable typed shape — json.Encoder re-marshal is
+			// lossless here, no Raw needed.
+			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), comments))
 		}
 
 		if len(comments) == 0 {

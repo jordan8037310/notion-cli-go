@@ -47,14 +47,8 @@ var usersListCmd = &cobra.Command{
 		}
 
 		if globalJSON {
-			// NDJSON: one user object per line. Stable typed shape.
-			out := cmd.OutOrStdout()
-			for _, u := range users {
-				if err := emitJSON(out, u); err != nil {
-					return jsonErrorOr(cmd, err)
-				}
-			}
-			return nil
+			// emitList picks NDJSON or a pretty JSON array based on --pretty.
+			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), users))
 		}
 
 		if len(users) == 0 {

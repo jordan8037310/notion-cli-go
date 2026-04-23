@@ -139,8 +139,9 @@ func TestEmitJSON_Pretty(t *testing.T) {
 	}
 }
 
-// TestEmitJSONLines writes NDJSON from a typed slice.
-func TestEmitJSONLines(t *testing.T) {
+// TestEmitList_CompactNDJSON verifies the default list path emits one
+// compact JSON object per line (NDJSON).
+func TestEmitList_CompactNDJSON(t *testing.T) {
 	t.Cleanup(resetGlobalOutputFlags)
 	resetGlobalOutputFlags()
 	var buf bytes.Buffer
@@ -148,8 +149,8 @@ func TestEmitJSONLines(t *testing.T) {
 		{ID: "u1", Name: "Ada"},
 		{ID: "u2", Name: "Grace"},
 	}
-	if err := emitJSONLines(&buf, items); err != nil {
-		t.Fatalf("emitJSONLines: %v", err)
+	if err := emitList(&buf, items); err != nil {
+		t.Fatalf("emitList: %v", err)
 	}
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
 	if len(lines) != 2 {
@@ -160,10 +161,48 @@ func TestEmitJSONLines(t *testing.T) {
 		if err := json.Unmarshal([]byte(l), &u); err != nil {
 			t.Errorf("line %d: %v", i, err)
 		}
+		if strings.Contains(l, "  ") {
+			t.Errorf("line %d unexpectedly indented: %q", i, l)
+		}
 	}
 	// Non-slice input must error.
-	if err := emitJSONLines(&buf, map[string]int{"a": 1}); err == nil {
-		t.Error("emitJSONLines: want error on non-slice input")
+	if err := emitList(&buf, map[string]int{"a": 1}); err == nil {
+		t.Error("emitList: want error on non-slice input")
+	}
+}
+
+// TestEmitList_PrettyArray verifies --pretty switches the list path to
+// a single indented JSON array (still valid JSON — this is the fix for
+// the multi-line-NDJSON bug flagged in PR #28 review).
+func TestEmitList_PrettyArray(t *testing.T) {
+	t.Cleanup(resetGlobalOutputFlags)
+	resetGlobalOutputFlags()
+	globalPretty = true
+	var buf bytes.Buffer
+	items := []utils.User{
+		{ID: "u1", Name: "Ada"},
+		{ID: "u2", Name: "Grace"},
+	}
+	if err := emitList(&buf, items); err != nil {
+		t.Fatalf("emitList: %v", err)
+	}
+	// The whole output must be a single valid JSON array — not NDJSON.
+	var arr []utils.User
+	if err := json.Unmarshal(buf.Bytes(), &arr); err != nil {
+		t.Fatalf("pretty output is not a single JSON array: %v (%q)", err, buf.String())
+	}
+	if len(arr) != 2 {
+		t.Fatalf("want 2 elements, got %d", len(arr))
+	}
+	// Must be indented — the indent marker appears inside the array.
+	if !strings.Contains(buf.String(), "\n  ") {
+		t.Errorf("pretty output missing indent:\n%s", buf.String())
+	}
+	// Must start with '[' and end with ']\n' so downstream parsers
+	// treating it as a JSON document work.
+	s := strings.TrimRight(buf.String(), "\n")
+	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") {
+		t.Errorf("pretty output is not a single array: %q", s)
 	}
 }
 
@@ -687,10 +726,10 @@ func TestDatabases_Query_JSON(t *testing.T) {
 	}
 }
 
-// TestDatabases_Query_JSONPretty verifies --pretty indents output.
-// We can't require NDJSON in pretty mode (each element spans multiple
-// lines), so we just assert the indent is present.
-func TestDatabases_Query_JSONPretty(t *testing.T) {
+// TestDatabases_Query_JSON_Pretty verifies --pretty on a list command
+// emits a single indented JSON array (the whole output parses as a
+// single JSON document), not broken multi-line NDJSON.
+func TestDatabases_Query_JSON_Pretty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -698,6 +737,7 @@ func TestDatabases_Query_JSONPretty(t *testing.T) {
 			"has_more": false,
 			"results": []map[string]interface{}{
 				{"object": "page", "id": "p1", "url": "u"},
+				{"object": "page", "id": "p2", "url": "u"},
 			},
 		})
 	}))
@@ -716,8 +756,45 @@ func TestDatabases_Query_JSONPretty(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	assertNoANSI(t, out.String())
-	if !strings.Contains(out.String(), "\n  \"") {
-		t.Errorf("pretty output missing indent:\n%s", out.String())
+	// Whole output must parse as a single JSON array.
+	var arr []map[string]interface{}
+	if err := json.Unmarshal(out.Bytes(), &arr); err != nil {
+		t.Fatalf("pretty list output is not a single JSON array: %v (%q)", err, out.String())
+	}
+	if len(arr) != 2 {
+		t.Errorf("want 2 elements, got %d: %q", len(arr), out.String())
+	}
+	// Pretty-printed arrays put each element on its own line; an
+	// element key sits at 4-space indent (2 for array nesting + 2 for
+	// object member).
+	if !strings.Contains(out.String(), "\n    \"") {
+		t.Errorf("pretty output missing indented member:\n%s", out.String())
+	}
+}
+
+// TestBlocks_List_JSON_Pretty asserts the same array-not-NDJSON shape
+// on the blocks list command specifically (the one called out in the
+// review).
+func TestBlocks_List_JSON_Pretty(t *testing.T) {
+	_ = withCmdEnv(t)
+	resetGlobalOutputFlags()
+	blockType = ""
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "list", "--json", "--pretty"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	assertNoANSI(t, out.String())
+	// Must parse as a single JSON array (not NDJSON).
+	var arr []map[string]interface{}
+	if err := json.Unmarshal(out.Bytes(), &arr); err != nil {
+		t.Fatalf("blocks list --pretty is not a JSON array: %v (%q)", err, out.String())
+	}
+	if len(arr) == 0 {
+		t.Fatalf("no elements in pretty array: %q", out.String())
 	}
 }
 

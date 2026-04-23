@@ -27,19 +27,13 @@ var listCmd = &cobra.Command{
 		// mirrors the blocks list split (typed objects pass-through).
 		if globalJSON {
 			// GetAllBlocks with "to_do" mirrors the human list by only
-			// returning to-do blocks. NDJSON: one raw Notion block object
-			// per line.
+			// returning to-do blocks. emitList picks NDJSON or a pretty
+			// JSON array depending on --pretty.
 			blocks, err := utils.GetAllBlocks(notionAPIKey, pageID, "to_do")
 			if err != nil {
 				return jsonErrorOr(cmd, fmt.Errorf("list: fetch blocks: %w", err))
 			}
-			out := cmd.OutOrStdout()
-			for _, b := range blocks {
-				if err := emitJSON(out, b); err != nil {
-					return jsonErrorOr(cmd, err)
-				}
-			}
-			return nil
+			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), blocks))
 		}
 
 		brightWhite := color.New(color.FgHiWhite).SprintFunc()

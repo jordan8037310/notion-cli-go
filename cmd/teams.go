@@ -38,14 +38,8 @@ var teamsListCmd = &cobra.Command{
 		}
 
 		if globalJSON {
-			// NDJSON: one team object per line. Stable typed shape.
-			out := cmd.OutOrStdout()
-			for _, team := range teams {
-				if err := emitJSON(out, team); err != nil {
-					return jsonErrorOr(cmd, err)
-				}
-			}
-			return nil
+			// emitList picks NDJSON or a pretty JSON array based on --pretty.
+			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), teams))
 		}
 
 		if len(teams) == 0 {
