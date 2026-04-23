@@ -65,10 +65,14 @@ func newViewClient() (*utils.ViewClient, error) {
 	return utils.NewViewClient(c), nil
 }
 
-// readConfigJSON reads a JSON config file from disk and decodes it into
-// a loosely-typed map. An empty path returns (nil, nil) so callers can
-// use the helper unconditionally without branching on the optional flag.
-func readConfigJSON(path string) (map[string]interface{}, error) {
+// readConfigJSON reads a JSON config file from disk and returns its
+// bytes as a json.RawMessage so the view-configuration payload passes
+// through unchanged (preserving key order and avoiding float64 coercion
+// of numeric IDs). An empty path returns (nil, nil) so callers can use
+// the helper unconditionally without branching on the optional flag.
+// The bytes are validated as JSON syntax so a malformed file surfaces a
+// parse error at the CLI layer rather than after the wire call.
+func readConfigJSON(path string) (json.RawMessage, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -84,11 +88,10 @@ func readConfigJSON(path string) (map[string]interface{}, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("config-json %q is empty", path)
 	}
-	var out map[string]interface{}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("parse config-json: %w", err)
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("parse config-json: invalid JSON in %q", path)
 	}
-	return out, nil
+	return json.RawMessage(raw), nil
 }
 
 // viewsCreateCmd creates a new view on the given database. The command
