@@ -54,12 +54,16 @@ type PageParent struct {
 // a loosely-typed map for v1 so callers can round-trip arbitrary Notion
 // property shapes without losing fields. A typed property surface can land in
 // a follow-up.
+//
+// InTrash mirrors Notion's 2026-03-11 field rename from `archived` to
+// `in_trash`. The Archive/Unarchive methods on PageClient still flip this
+// flag; only the wire-format key changed.
 type Page struct {
 	Object         string                 `json:"object"`
 	ID             string                 `json:"id"`
 	CreatedTime    string                 `json:"created_time"`
 	LastEditedTime string                 `json:"last_edited_time"`
-	Archived       bool                   `json:"archived"`
+	InTrash        bool                   `json:"in_trash"`
 	URL            string                 `json:"url"`
 	Parent         PageParent             `json:"parent"`
 	Properties     map[string]interface{} `json:"properties"`
@@ -78,12 +82,16 @@ type CreatePageRequest struct {
 }
 
 // UpdatePageRequest is the body for PATCH /v1/pages/{id}. All fields are
-// optional: unset fields are not sent. Archived is a *bool so callers can
-// distinguish "leave alone" from "explicitly unarchive".
+// optional: unset fields are not sent. InTrash is a *bool so callers can
+// distinguish "leave alone" from "explicitly restore from trash".
+//
+// The JSON key is `in_trash` per Notion-Version 2026-03-11, which renamed
+// the prior `archived` field across all request parameters and response
+// bodies.
 type UpdatePageRequest struct {
 	Title      string                 `json:"-"`
 	Properties map[string]interface{} `json:"properties,omitempty"`
-	Archived   *bool                  `json:"archived,omitempty"`
+	InTrash    *bool                  `json:"in_trash,omitempty"`
 	Parent     *PageParent            `json:"parent,omitempty"`
 }
 
@@ -184,8 +192,8 @@ func (p *PageClient) Update(ctx context.Context, id string, req UpdatePageReques
 	if len(props) > 0 {
 		body["properties"] = props
 	}
-	if req.Archived != nil {
-		body["archived"] = *req.Archived
+	if req.InTrash != nil {
+		body["in_trash"] = *req.InTrash
 	}
 	if req.Parent != nil {
 		body["parent"] = *req.Parent
@@ -208,34 +216,36 @@ func (p *PageClient) Update(ctx context.Context, id string, req UpdatePageReques
 	return &page, nil
 }
 
-// setArchived issues the archived PATCH for Archive/Unarchive.
-func (p *PageClient) setArchived(ctx context.Context, id string, archived bool) error {
+// setInTrash issues the in_trash PATCH for Archive/Unarchive. The wire
+// format key is `in_trash` on Notion-Version 2026-03-11; the method names
+// remain Archive/Unarchive to preserve the CLI verbs familiar to callers.
+func (p *PageClient) setInTrash(ctx context.Context, id string, inTrash bool) error {
 	if err := p.checkAuth(); err != nil {
-		return fmt.Errorf("set archived: %w", err)
+		return fmt.Errorf("set in_trash: %w", err)
 	}
 	if id == "" {
-		return fmt.Errorf("set archived: id is required")
+		return fmt.Errorf("set in_trash: id is required")
 	}
-	body := map[string]interface{}{"archived": archived}
+	body := map[string]interface{}{"in_trash": inTrash}
 	req, err := p.c.newRequest(ctx, http.MethodPatch, "/pages/"+id, body)
 	if err != nil {
 		return err
 	}
 	resp, err := p.c.do(req)
 	if err != nil {
-		return fmt.Errorf("set archived: %w", err)
+		return fmt.Errorf("set in_trash: %w", err)
 	}
 	return expectStatus(resp, http.StatusOK)
 }
 
-// Archive sets archived=true on the page.
+// Archive moves the page to the trash by setting in_trash=true.
 func (p *PageClient) Archive(ctx context.Context, id string) error {
-	return p.setArchived(ctx, id, true)
+	return p.setInTrash(ctx, id, true)
 }
 
-// Unarchive sets archived=false on the page.
+// Unarchive restores the page from the trash by setting in_trash=false.
 func (p *PageClient) Unarchive(ctx context.Context, id string) error {
-	return p.setArchived(ctx, id, false)
+	return p.setInTrash(ctx, id, false)
 }
 
 // Move reparents a page via PATCH /v1/pages/{id} with a parent update. The
