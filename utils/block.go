@@ -16,6 +16,13 @@ import (
 
 var baseURL = "https://api.notion.com/v1"
 
+// SetBaseURL redirects the Notion API client to an arbitrary URL. Intended
+// for tests (especially the cmd/ layer, which cannot reach test-only symbols
+// defined in utils/*_test.go). Production callers should not use this.
+func SetBaseURL(url string) {
+	baseURL = url
+}
+
 // BlockTypeInfo contains display information for a block type
 type BlockTypeInfo struct {
 	Icon  string

@@ -13,10 +13,6 @@ var (
 	deletedBlocks map[string]bool
 )
 
-func SetBaseURL(url string) {
-	baseURL = url
-}
-
 func mockBlock(texts []string) Block {
 
 	richTexts := make([]RichText, len(texts))
