@@ -89,7 +89,8 @@ func TestSearchCmdFlags(t *testing.T) {
 		{"type", "string", ""},
 		{"limit", "int", "0"},
 		{"page-size", "int", "0"},
-		{"json", "bool", "false"},
+		// Note: --json moved from a search-local flag to a persistent
+		// flag on rootCmd. Verified separately in TestRootPersistentFlags.
 	}
 	for _, tt := range tests {
 		t.Run(tt.flag, func(t *testing.T) {
@@ -431,16 +432,18 @@ func TestEmitSearchJSON(t *testing.T) {
 // cmd.ErrOrStderr(). The JSON branch must emit a parseable single-line
 // error object so stdout stays valid NDJSON.
 func TestEmitSearchError(t *testing.T) {
-	// Restore package-level flag even if the test aborts mid-run.
-	prev := searchJSON
-	t.Cleanup(func() { searchJSON = prev })
+	// Restore package-level flag even if the test aborts mid-run. The
+	// JSON toggle moved to the global --json plumbing so we touch
+	// globalJSON here rather than a search-local flag.
+	prev := globalJSON
+	t.Cleanup(func() { globalJSON = prev })
 
 	c := &cobra.Command{}
 	var stdout, stderr bytes.Buffer
 	c.SetOut(&stdout)
 	c.SetErr(&stderr)
 
-	searchJSON = false
+	globalJSON = false
 	emitSearchError(c, errorString("human"))
 	if !strings.Contains(stderr.String(), "human") {
 		t.Errorf("human branch did not write to stderr: %q", stderr.String())
@@ -451,7 +454,7 @@ func TestEmitSearchError(t *testing.T) {
 
 	stderr.Reset()
 	stdout.Reset()
-	searchJSON = true
+	globalJSON = true
 	emitSearchError(c, errorString("boom"))
 	if stdout.Len() != 0 {
 		t.Errorf("json branch wrote to stdout: %q", stdout.String())
@@ -469,11 +472,11 @@ func TestResetSearchFlags(t *testing.T) {
 	searchType = "pages"
 	searchLimit = 42
 	searchPageSize = 17
-	searchJSON = true
+	globalJSON = true
 	resetSearchFlags()
-	if searchType != "" || searchLimit != 0 || searchPageSize != 0 || searchJSON {
+	if searchType != "" || searchLimit != 0 || searchPageSize != 0 || globalJSON {
 		t.Errorf("flags not reset: type=%q limit=%d pageSize=%d json=%v",
-			searchType, searchLimit, searchPageSize, searchJSON)
+			searchType, searchLimit, searchPageSize, globalJSON)
 	}
 }
 

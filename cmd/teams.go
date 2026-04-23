@@ -10,7 +10,6 @@ import (
 
 	"notioncli/utils"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -29,24 +28,34 @@ Requires Notion-Version 2026-03-11 or newer.`,
 var teamsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List every team in the workspace",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		notionAPIKey, _ := utils.SetAPIConfig()
 		client := utils.NewTeamClient(utils.NewClient(notionAPIKey, utils.WithBaseURL(utils.GetBaseURL())))
 
 		teams, err := client.List(context.Background())
 		if err != nil {
-			color.Red("Error: %v", err)
-			osExit(1)
-			return
+			return jsonErrorOr(cmd, fmt.Errorf("teams list: %w", err))
+		}
+
+		if globalJSON {
+			// NDJSON: one team object per line. Stable typed shape.
+			out := cmd.OutOrStdout()
+			for _, team := range teams {
+				if err := emitJSON(out, team); err != nil {
+					return jsonErrorOr(cmd, err)
+				}
+			}
+			return nil
 		}
 
 		if len(teams) == 0 {
 			fmt.Fprintln(cmd.OutOrStdout(), "No teams found.")
-			return
+			return nil
 		}
 		for _, team := range teams {
 			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", team.ID, team.Name)
 		}
+		return nil
 	},
 }
 

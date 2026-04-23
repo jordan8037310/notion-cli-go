@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -80,49 +79,26 @@ func TestTeamsListDispatch_HappyPath(t *testing.T) {
 }
 
 // TestTeamsListDispatch_AuthError asserts that an unconfigured API key
-// surfaces via osExit(1) and the "Error:" color.Red branch, without
-// panicking.
+// surfaces as a returned error from the RunE handler. The command
+// migrated from Run (which called osExit) to RunE (which returns the
+// error) as part of the --json rollout, so this test now asserts on
+// the returned error rather than osExit.
 func TestTeamsListDispatch_AuthError(t *testing.T) {
 	_ = withCmdEnv(t)
 	// Blank out the API key AFTER withCmdEnv so SetAPIConfig returns an
 	// empty string; TeamClient.List then surfaces ErrMissingAPIKey.
 	t.Setenv("NOTION_API_KEY", "")
 
-	var exited bool
-	var code int
-	origExit := osExit
-	osExit = func(c int) {
-		exited = true
-		code = c
-	}
-	t.Cleanup(func() { osExit = origExit })
-
-	// Capture fatih/color output.
 	var out bytes.Buffer
-	origColorOut := color.Output
-	origColorErr := color.Error
-	color.Output = &out
-	color.Error = &out
-	t.Cleanup(func() {
-		color.Output = origColorOut
-		color.Error = origColorErr
-	})
-
 	resetRootCmdArgs()
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
 	rootCmd.SetArgs([]string{"teams", "list"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute(teams list): %v", err)
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("teams list with empty API key should return an error")
 	}
-
-	if !exited {
-		t.Fatal("teams list with empty API key did not invoke osExit")
-	}
-	if code != 1 {
-		t.Errorf("teams list osExit code = %d, want 1", code)
-	}
-	if !strings.Contains(out.String(), "api key") {
-		t.Errorf("teams list output missing api-key error:\n%s", out.String())
+	if !strings.Contains(err.Error(), "api key") {
+		t.Errorf("teams list error missing api-key context: %v", err)
 	}
 }

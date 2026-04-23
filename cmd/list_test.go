@@ -23,8 +23,11 @@ func TestListCmdMetadata(t *testing.T) {
 			if c.Long == "" {
 				t.Error("list: Long description is empty")
 			}
-			if c.Run == nil {
-				t.Error("list: Run function not set")
+			// list was migrated from Run to RunE to surface errors for
+			// the --json path. Either handler being set keeps backward
+			// compatibility with any test that predates the migration.
+			if c.Run == nil && c.RunE == nil {
+				t.Error("list: Run/RunE function not set")
 			}
 			break
 		}

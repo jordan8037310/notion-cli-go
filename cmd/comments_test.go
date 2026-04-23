@@ -179,7 +179,7 @@ func TestCommentsListDispatch(t *testing.T) {
 	})
 
 	// Reset shared flag state in case a previous test toggled it.
-	commentsListJSON = false
+	resetGlobalOutputFlags()
 
 	resetRootCmdArgs()
 	var out bytes.Buffer
@@ -221,7 +221,7 @@ func TestCommentsCreateDispatch(t *testing.T) {
 
 	commentsCreateText = ""
 	commentsCreateDiscID = ""
-	commentsCreateJSON = false
+	resetGlobalOutputFlags()
 
 	resetRootCmdArgs()
 	var out bytes.Buffer
@@ -261,7 +261,7 @@ func TestCommentsCreateReplyDispatch(t *testing.T) {
 
 	commentsCreateText = ""
 	commentsCreateDiscID = ""
-	commentsCreateJSON = false
+	resetGlobalOutputFlags()
 
 	resetRootCmdArgs()
 	var out bytes.Buffer
@@ -302,8 +302,11 @@ func TestCommentsCreateMissingText(t *testing.T) {
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
 	rootCmd.SetArgs([]string{"comments", "create", "block-xyz"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute: %v", err)
+	// Missing --text is now a validation error returned by RunE. The
+	// previous implementation logged and returned nil; this is the
+	// deliberate upgrade so cobra's exit code reflects the failure.
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected error on missing --text, got nil")
 	}
 	if atomic.LoadInt64(&posted) != 0 {
 		t.Error("missing --text should short-circuit before POST")

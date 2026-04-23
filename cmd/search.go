@@ -20,11 +20,14 @@ import (
 // during init(); resetSearchFlags() is called at the top of Run so repeated
 // invocations within a single process (tests, REPLs) don't inherit stale
 // values.
+//
+// The JSON switch is the persistent --json flag on rootCmd (globalJSON);
+// search used to own a local --json flag but now shares the global one so
+// all commands behave consistently.
 var (
 	searchType     string
 	searchLimit    int
 	searchPageSize int
-	searchJSON     bool
 )
 
 // searchCmd implements `notioncli search` — a workspace-wide query against
@@ -85,7 +88,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if searchJSON {
+	if globalJSON {
 		return emitSearchJSON(cmd, results)
 	}
 	return emitSearchTable(cmd, results)
@@ -178,9 +181,8 @@ func emitSearchTable(cmd *cobra.Command, results []utils.SearchResult) error {
 // os.Exit; the RunE return value drives the final exit code via cobra.
 func emitSearchError(cmd *cobra.Command, err error) {
 	errOut := cmd.ErrOrStderr()
-	if searchJSON {
-		enc := json.NewEncoder(errOut)
-		_ = enc.Encode(map[string]string{"error": err.Error()})
+	if globalJSON {
+		emitError(errOut, err)
 		return
 	}
 	fmt.Fprintln(errOut, color.RedString("Error: %v", err))
@@ -257,7 +259,7 @@ func resetSearchFlags() {
 	searchType = ""
 	searchLimit = 0
 	searchPageSize = 0
-	searchJSON = false
+	resetGlobalOutputFlags()
 }
 
 func init() {
@@ -265,5 +267,4 @@ func init() {
 	searchCmd.Flags().StringVar(&searchType, "type", "", "Restrict results to pages|databases")
 	searchCmd.Flags().IntVar(&searchLimit, "limit", 0, "Maximum total results to return (0 = all)")
 	searchCmd.Flags().IntVar(&searchPageSize, "page-size", 0, "Notion API page size (1-100, 0 = server default)")
-	searchCmd.Flags().BoolVar(&searchJSON, "json", false, "Emit raw results as NDJSON to stdout")
 }

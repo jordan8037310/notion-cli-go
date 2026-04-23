@@ -7,7 +7,6 @@ package cmd
 import (
 	"fmt"
 	"notioncli/utils"
-	"os"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -18,19 +17,23 @@ var uncheckCmd = &cobra.Command{
 	Short: "Mark a task as incomplete",
 	Long:  `Mark a ToDo task as incomplete, e.g., check 1 (marks the first ToDo in the list incomplete)`,
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		order, err := strconv.Atoi(args[0])
 		if err != nil {
-			fmt.Printf("Could not convert %q to an integer: %v", args[0], err)
-			os.Exit(1)
+			return jsonErrorOr(cmd, fmt.Errorf("uncheck: parse order %q: %w", args[0], err))
 		}
 		notionAPIKey, pageID := utils.SetAPIConfig()
-		result := utils.MarkToDoBlockUnChecked(notionAPIKey, pageID, order)
-		if result != nil {
-			fmt.Printf("Error marking task %d as incomplete: %v\n", order, result)
-			os.Exit(1)
+		if err := utils.MarkToDoBlockUnChecked(notionAPIKey, pageID, order); err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("uncheck: mark task %d incomplete: %w", order, err))
 		}
-		fmt.Printf("Task %d marked incomplete.\n", order)
+		if globalJSON {
+			return emitOK(cmd.OutOrStdout(), map[string]interface{}{
+				"action": "uncheck",
+				"order":  order,
+			})
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Task %d marked incomplete.\n", order)
+		return nil
 	},
 }
 

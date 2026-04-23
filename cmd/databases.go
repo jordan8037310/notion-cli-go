@@ -104,11 +104,14 @@ var databasesGetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dc, err := newDatabaseClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		db, err := dc.Get(context.Background(), args[0])
 		if err != nil {
-			return fmt.Errorf("get database: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("get database: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), db))
 		}
 		printDatabase(cmd.OutOrStdout(), db)
 		return nil
@@ -125,19 +128,30 @@ var databasesQueryCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		filter, err := readJSONFile(dbQueryFilterJSON)
 		if err != nil {
-			return fmt.Errorf("query database: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("query database: %w", err))
 		}
 		sort, err := readJSONFile(dbQuerySortJSON)
 		if err != nil {
-			return fmt.Errorf("query database: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("query database: %w", err))
 		}
 		dc, err := newDatabaseClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		results, err := dc.QueryAll(context.Background(), args[0], filter, sort, dbQueryLimit)
 		if err != nil {
-			return fmt.Errorf("query database: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("query database: %w", err))
+		}
+		if globalJSON {
+			// NDJSON: one JSON object per page row. Matches the shape
+			// printQueryResults already emits when --json was the default.
+			out := cmd.OutOrStdout()
+			for _, p := range results {
+				if err := emitJSON(out, p); err != nil {
+					return jsonErrorOr(cmd, err)
+				}
+			}
+			return nil
 		}
 		printQueryResults(cmd.OutOrStdout(), results)
 		return nil
@@ -150,15 +164,15 @@ var databasesCreateCmd = &cobra.Command{
 	Short: "Create a new database under --parent",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if dbCreateParent == "" {
-			return fmt.Errorf("create database: --parent is required")
+			return jsonErrorOr(cmd, fmt.Errorf("create database: --parent is required"))
 		}
 		props, err := readPropertiesFile(dbCreatePropsFile)
 		if err != nil {
-			return fmt.Errorf("create database: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("create database: %w", err))
 		}
 		dc, err := newDatabaseClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		db, err := dc.Create(context.Background(), utils.CreateDatabaseRequest{
 			Parent:     utils.PageParent{PageID: dbCreateParent},
@@ -166,7 +180,10 @@ var databasesCreateCmd = &cobra.Command{
 			Properties: props,
 		})
 		if err != nil {
-			return fmt.Errorf("create database: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("create database: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), db))
 		}
 		color.Green("Created database %s", db.ID)
 		printDatabase(cmd.OutOrStdout(), db)
@@ -184,21 +201,24 @@ var databasesUpdateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		props, err := readPropertiesFile(dbUpdatePropsFile)
 		if err != nil {
-			return fmt.Errorf("update database: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("update database: %w", err))
 		}
 		if dbUpdateTitle == "" && len(props) == 0 {
-			return fmt.Errorf("update database: at least one of --title or --properties-json is required")
+			return jsonErrorOr(cmd, fmt.Errorf("update database: at least one of --title or --properties-json is required"))
 		}
 		dc, err := newDatabaseClient()
 		if err != nil {
-			return err
+			return jsonErrorOr(cmd, err)
 		}
 		db, err := dc.Update(context.Background(), args[0], utils.UpdateDatabaseRequest{
 			Title:      dbUpdateTitle,
 			Properties: props,
 		})
 		if err != nil {
-			return fmt.Errorf("update database: %w", err)
+			return jsonErrorOr(cmd, fmt.Errorf("update database: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), db))
 		}
 		color.Green("Updated database %s", db.ID)
 		printDatabase(cmd.OutOrStdout(), db)

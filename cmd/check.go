@@ -7,7 +7,6 @@ package cmd
 import (
 	"fmt"
 	"notioncli/utils"
-	"os"
 	"strconv"
 
 	"github.com/spf13/cobra"
@@ -18,20 +17,23 @@ var checkCmd = &cobra.Command{
 	Short: "Mark a task as complete",
 	Long:  `Mark a ToDo task as complete, e.g., check 1 (marks the first ToDo in the list complete)`,
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		order, err := strconv.Atoi(args[0])
 		if err != nil {
-			fmt.Printf("Could not convert %q to an integer: %v", args[0], err)
-			os.Exit(1)
+			return jsonErrorOr(cmd, fmt.Errorf("check: parse order %q: %w", args[0], err))
 		}
 		notionAPIKey, pageID := utils.SetAPIConfig()
-		result := utils.MarkToDoBlockChecked(notionAPIKey, pageID, order)
-		if result != nil {
-			fmt.Printf("Error marking task %d as complete: %v\n", order, result)
-			os.Exit(1)
+		if err := utils.MarkToDoBlockChecked(notionAPIKey, pageID, order); err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("check: mark task %d complete: %w", order, err))
 		}
-		fmt.Printf("Task %d marked complete.\n", order)
-
+		if globalJSON {
+			return emitOK(cmd.OutOrStdout(), map[string]interface{}{
+				"action": "check",
+				"order":  order,
+			})
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Task %d marked complete.\n", order)
+		return nil
 	},
 }
 

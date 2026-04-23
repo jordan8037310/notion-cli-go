@@ -17,7 +17,7 @@ var rootCmd = &cobra.Command{
 	Use:   "notioncli",
 	Short: "Notioncli provides a CLI interface to track your tasks in a Notion page",
 	Long: `Notioncli is a tool that utilizes the official Notion API to enable the integration of to-do lists from Notion pages into your command line interface.
-	
+
 		This version supports the following options:
 		  list (to list tasks)
 		  add <task> (create a new task)
@@ -25,6 +25,19 @@ var rootCmd = &cobra.Command{
 		  uncheck <number> (mark a task as not done)
 		  delete <number> (permanently remove a task)
 		  help (get some help)`,
+	// PersistentPreRunE fires for every subcommand. It normalises the
+	// --output=text|json alias into the boolean flag and turns off ANSI
+	// color output whenever JSON is on so downstream commands that still
+	// call color.* cannot bleed escape codes into the JSON stream.
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := applyGlobalOutput(); err != nil {
+			return err
+		}
+		if globalJSON {
+			disableColor()
+		}
+		return nil
+	},
 }
 
 // osExit is indirected through a package-level var so tests can swap in a
@@ -33,15 +46,44 @@ var osExit = os.Exit
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
+//
+// The banner line is suppressed when --json (or --output=json) is set so
+// consumers piping stdout into jq get a valid NDJSON stream. When --help
+// is requested we also skip the banner since the help formatter already
+// prints a short header.
 func Execute() {
-	boldBlue := color.New(color.Bold, color.FgBlue).SprintFunc()
-	fmt.Println(boldBlue("----=[ NotionCLI ]=----"))
+	if !shouldSuppressBanner() {
+		boldBlue := color.New(color.Bold, color.FgBlue).SprintFunc()
+		fmt.Println(boldBlue("----=[ NotionCLI ]=----"))
+	}
 	err := rootCmd.Execute()
 	if err != nil {
 		osExit(1)
 	}
 }
 
-func init() {
+// shouldSuppressBanner returns true when the invocation should skip the
+// cosmetic banner line. We look at os.Args directly (rather than after
+// cobra parses the flags) so the very first byte of stdout is not a
+// terminal escape. cobra's Execute() is what wires --json into the
+// globalJSON var, and by then the banner has already been written.
+func shouldSuppressBanner() bool {
+	for _, a := range os.Args[1:] {
+		switch a {
+		case "--json", "--output=json":
+			return true
+		case "--output":
+			// next arg is the value — we can't safely index past here
+			// without repeating cobra's parser, so suppress on sight.
+			return true
+		}
+	}
+	return false
+}
 
+func init() {
+	// Persistent output flags. Every subcommand inherits these.
+	rootCmd.PersistentFlags().BoolVar(&globalJSON, "json", false, "Emit JSON/NDJSON to stdout (disables ANSI color)")
+	rootCmd.PersistentFlags().BoolVar(&globalPretty, "pretty", false, "Pretty-print JSON output (no effect unless --json is set)")
+	rootCmd.PersistentFlags().StringVar(&globalOutput, "output", "", "Output format: text|json (alias for --json)")
 }
