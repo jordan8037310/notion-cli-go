@@ -211,9 +211,9 @@ func TestGet_Happy(t *testing.T) {
 	}
 }
 
-// TestGet_NotFound verifies a 404 produces an error rather
+// TestUsers_Get_NotFound verifies a 404 produces an error rather
 // than a panic or nil user.
-func TestGet_NotFound(t *testing.T) {
+func TestUsers_Get_NotFound(t *testing.T) {
 	srv := newUsersMock(t)
 	defer srv.Close()
 
