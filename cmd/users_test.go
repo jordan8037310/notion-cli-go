@@ -367,6 +367,170 @@ func TestUsersWhoamiDispatch_HTTPErrorExits(t *testing.T) {
 	}
 }
 
+// TestUsersListDispatch_HumanOutput runs `notioncli users list` WITHOUT
+// --json and asserts the rendered rows contain each user's key fields.
+// Covers cmd/users.go:62-68 (the empty-check + formatUser loop).
+func TestUsersListDispatch_HumanOutput(t *testing.T) {
+	withUsersEnvHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/users" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(utils.UserList{
+				Object: "list",
+				Results: []utils.User{
+					{Object: "user", ID: "u1", Type: "person", Name: "Ada", Person: &utils.UserPerson{Email: "ada@example.com"}},
+					{Object: "user", ID: "u2", Type: "person", Name: "Grace", Person: &utils.UserPerson{Email: "grace@example.com"}},
+					{Object: "user", ID: "bot-1", Type: "bot", Name: "CLI bot", Bot: &utils.UserBot{WorkspaceName: "Acme"}},
+				},
+			})
+			return
+		}
+		http.Error(w, `{"object":"error","code":"not_found"}`, http.StatusNotFound)
+	}))
+
+	usersJSON = false
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"users", "list"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(users list): %v", err)
+	}
+
+	// Assert that each user's key fields land on stdout exactly once.
+	// Stick to key substrings rather than exact byte-matching the whole
+	// line so the formatter is free to tweak cosmetics.
+	got := out.String()
+	for _, want := range []string{"Ada", "ada@example.com", "Grace", "grace@example.com", "CLI bot", "Acme", "u1", "u2", "bot-1"} {
+		if c := strings.Count(got, want); c != 1 {
+			t.Errorf("users list human output: want substring %q exactly once, got %d\noutput:\n%s", want, c, got)
+		}
+	}
+}
+
+// TestUsersListDispatch_HumanOutputEmpty covers the "No users returned."
+// branch (cmd/users.go:62-65) when the Notion API returns an empty list.
+func TestUsersListDispatch_HumanOutputEmpty(t *testing.T) {
+	withUsersEnvHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(utils.UserList{Object: "list", Results: []utils.User{}})
+	}))
+
+	exited, _ := recordOSExit(t)
+	var out bytes.Buffer
+	captureColorOutput(t, &out)
+
+	usersJSON = false
+	resetRootCmdArgs()
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"users", "list"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(users list): %v", err)
+	}
+
+	if *exited {
+		t.Error("users list: osExit was unexpectedly called on an empty list")
+	}
+	if !strings.Contains(out.String(), "No users returned") {
+		t.Errorf("users list (empty): want substring 'No users returned' in:\n%s", out.String())
+	}
+}
+
+// TestUsersGetDispatch_HumanOutput runs `users get u1` without --json
+// and asserts formatUser produced output containing the id and name.
+// Covers cmd/users.go:96.
+func TestUsersGetDispatch_HumanOutput(t *testing.T) {
+	withUsersEnv(t)
+
+	usersJSON = false
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"users", "get", "u1"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(users get): %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"u1", "Ada"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("users get human output: want substring %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestUsersWhoamiDispatch_HumanOutput runs `users whoami` without
+// --json and asserts formatUser produced output for the bot user.
+// Covers cmd/users.go:123.
+func TestUsersWhoamiDispatch_HumanOutput(t *testing.T) {
+	withUsersEnv(t)
+
+	usersJSON = false
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"users", "whoami"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(users whoami): %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"bot-1", "CLI bot", "Acme"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("users whoami human output: want substring %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestFormatUser is a table-driven unit test that drives every branch
+// of the formatUser switch without going through HTTP. Covers the
+// unnamed-fallback and missing-type paths that the dispatch tests
+// don't reach.
+func TestFormatUser(t *testing.T) {
+	cases := []struct {
+		name string
+		in   utils.User
+		want []string // substrings the formatted string must contain
+	}{
+		{
+			name: "person with email",
+			in:   utils.User{ID: "u1", Type: "person", Name: "Ada", Person: &utils.UserPerson{Email: "ada@example.com"}},
+			want: []string{"[person]", "Ada", "<ada@example.com>", "id=u1"},
+		},
+		{
+			name: "bot with workspace",
+			in:   utils.User{ID: "bot-1", Type: "bot", Name: "CLI bot", Bot: &utils.UserBot{WorkspaceName: "Acme"}},
+			want: []string{"[bot]", "CLI bot", "(workspace: Acme)", "id=bot-1"},
+		},
+		{
+			name: "unnamed person falls back to placeholder",
+			in:   utils.User{ID: "u2", Type: "person"},
+			want: []string{"[person]", "(unnamed)", "id=u2"},
+		},
+		{
+			name: "missing type falls back to user",
+			in:   utils.User{ID: "u3", Name: "Anon"},
+			want: []string{"[user]", "Anon", "id=u3"},
+		},
+		{
+			name: "person with nil email does not add detail",
+			in:   utils.User{ID: "u4", Type: "person", Name: "Nilmail", Person: &utils.UserPerson{}},
+			want: []string{"[person]", "Nilmail", "id=u4"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatUser(tc.in)
+			for _, sub := range tc.want {
+				if !strings.Contains(got, sub) {
+					t.Errorf("formatUser = %q; missing %q", got, sub)
+				}
+			}
+		})
+	}
+}
+
 // TestUsersWhoamiDispatch runs `notioncli users whoami --json` and
 // asserts /users/me was hit.
 func TestUsersWhoamiDispatch(t *testing.T) {
