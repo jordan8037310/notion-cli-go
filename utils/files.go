@@ -106,6 +106,12 @@ type FileUploadRequest struct {
 // multipart/form-data in step 2. It is separate from ID because the URL
 // expires once the upload completes, while ID continues to reference the
 // uploaded file.
+//
+// Filename is what Notion echoes back from the request; FileRef.Name is the
+// canonical display name callers hydrate into their block/page payloads.
+// #11's implementer should treat FileRef.Name as canonical (feed it from
+// filepath.Base(path) or the caller's --name override) and use Filename
+// only for round-trip verification against the response.
 type FileUploadResponse struct {
 	Object     string `json:"object"`
 	ID         string `json:"id"`
@@ -197,9 +203,11 @@ func (f *FileClient) Upload(ctx context.Context, path string) (*FileRef, error) 
 	if err := validateUploadPath(path); err != nil {
 		return nil, err
 	}
-	// ctx is accepted for API stability; the real implementation will thread
-	// it into both HTTP calls. Referencing it here keeps the import required
-	// and prevents accidental removal during the issue #11 switchover.
-	_ = ctx
+	// Respect caller cancellation even on the stub path — zero behavioral
+	// cost for the synchronous not-supported return, but it exercises ctx
+	// today so #11's switchover doesn't need to re-wire context plumbing.
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("upload %q: %w", filepath.Base(path), err)
+	}
 	return nil, fmt.Errorf("upload %q: %w", filepath.Base(path), ErrFileUploadNotSupported)
 }

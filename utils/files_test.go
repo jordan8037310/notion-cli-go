@@ -29,12 +29,15 @@ func TestNewFileClient(t *testing.T) {
 	}
 }
 
-// TestFiles_NewFileRef pins the constructor's contract: Type is always the
+// TestNewFileRef pins the constructor's contract: Type is always the
 // FileRefTypeFileUpload constant, ID and Name are passed through verbatim,
 // and ExpiryTime is empty for caller assignment. A test here means a change
 // to the "file_upload" literal has to break either the constant or the
 // struct tag — it cannot silently drift.
-func TestFiles_NewFileRef(t *testing.T) {
+//
+// Name intentionally uses TestNewFileRef (no _Files infix) so
+// scripts/check-test-coverage.sh matches Test<FuncName>.
+func TestNewFileRef(t *testing.T) {
 	got := NewFileRef("abc-123", "hello.png")
 	if got == nil {
 		t.Fatal("NewFileRef: got nil")
@@ -215,6 +218,32 @@ func TestFiles_Upload_ValidationErrors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestFiles_Upload_RespectsCtxCancel asserts the stub returns a
+// context-cancellation error rather than the stub sentinel when the caller
+// has already cancelled the ctx. The real #11 implementation will thread
+// ctx into both HTTP calls; locking the cancel-first behavior here means a
+// switchover that loses the ctx.Err() check fails this test.
+func TestFiles_Upload_RespectsCtxCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	client := NewFileClient(NewClient("k", WithBaseURL("http://127.0.0.1:0")))
+	path := writeTempFile(t, 8)
+	got, err := client.Upload(ctx, path)
+	if err == nil {
+		t.Fatalf("Upload: want ctx.Canceled error, got %+v", got)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Upload: want errors.Is context.Canceled, got %v", err)
+	}
+	if errors.Is(err, ErrFileUploadNotSupported) {
+		t.Errorf("Upload: cancelled ctx should not surface ErrFileUploadNotSupported, got %v", err)
+	}
+	if got != nil {
+		t.Errorf("Upload: want nil FileRef, got %+v", got)
 	}
 }
 
