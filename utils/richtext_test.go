@@ -5,7 +5,9 @@
 package utils
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -383,5 +385,115 @@ func TestRichText_HasAnnotations(t *testing.T) {
 				t.Errorf("hasAnnotations(%+v) = %v, want %v", tt.ann, got, tt.want)
 			}
 		})
+	}
+}
+
+// stubTitleResolver is a deterministic in-memory PageTitleResolver for
+// the RenderRichText integration tests. Keeps the rich-text tests free
+// of httptest plumbing — the full CachingPageResolver is exercised in
+// mention_resolver_test.go.
+type stubTitleResolver struct {
+	titles map[string]string
+	err    error
+	calls  int
+}
+
+func (s *stubTitleResolver) ResolvePageTitle(ctx context.Context, pageID string) (string, error) {
+	s.calls++
+	if s.err != nil {
+		return "", s.err
+	}
+	if s.titles == nil {
+		return "", nil
+	}
+	t, ok := s.titles[pageID]
+	if !ok {
+		return "", errors.New("stub: no title for " + pageID)
+	}
+	return t, nil
+}
+
+// TestRenderRichText_WithResolver_Title exercises the happy path: the
+// resolver returns a non-empty title, and the output swaps the legacy
+// "[page:<id>]" marker for "[<title>]".
+func TestRenderRichText_WithResolver_Title(t *testing.T) {
+	withNoColor(t)
+
+	res := &stubTitleResolver{titles: map[string]string{"p-42": "Project Plan"}}
+	in := []RichText{
+		{PlainText: "See "},
+		{Type: "mention", Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-42"}}},
+		{PlainText: " for details."},
+	}
+	got := RenderRichTextWithResolver(context.Background(), in, res)
+	want := "See [Project Plan] for details."
+	if got != want {
+		t.Errorf("RenderRichTextWithResolver() = %q, want %q", got, want)
+	}
+	if res.calls != 1 {
+		t.Errorf("resolver calls=%d, want 1", res.calls)
+	}
+}
+
+// TestRenderRichText_WithResolver_Error confirms that any resolver
+// error falls back to the legacy "[page:<id>]" marker. This is the
+// guarantee the issue calls out: lookup errors must never panic and
+// must never drop the segment.
+func TestRenderRichText_WithResolver_Error(t *testing.T) {
+	withNoColor(t)
+
+	res := &stubTitleResolver{err: errors.New("boom")}
+	in := []RichText{{Type: "mention", Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-err"}}}}
+	got := RenderRichTextWithResolver(context.Background(), in, res)
+	if got != "[page:p-err]" {
+		t.Errorf("RenderRichTextWithResolver() = %q, want [page:p-err]", got)
+	}
+}
+
+// TestRenderRichText_WithResolver_EmptyTitle locks the "page has no
+// title" fallback: resolver returns ("", nil) and the renderer still
+// emits "[page:<id>]" rather than "[]".
+func TestRenderRichText_WithResolver_EmptyTitle(t *testing.T) {
+	withNoColor(t)
+
+	res := &stubTitleResolver{titles: map[string]string{"p-blank": ""}}
+	in := []RichText{{Type: "mention", Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-blank"}}}}
+	got := RenderRichTextWithResolver(context.Background(), in, res)
+	if got != "[page:p-blank]" {
+		t.Errorf("RenderRichTextWithResolver() = %q, want [page:p-blank]", got)
+	}
+}
+
+// TestRenderRichText_WithResolver_NonPageMentionsUnaffected asserts
+// that user / database / date mentions render identically regardless
+// of whether a resolver is supplied. The resolver must only be
+// consulted for page mentions.
+func TestRenderRichText_WithResolver_NonPageMentionsUnaffected(t *testing.T) {
+	withNoColor(t)
+
+	res := &stubTitleResolver{titles: map[string]string{"any": "Should Not Be Used"}}
+	in := []RichText{
+		{Type: "mention", Mention: &Mention{Type: "user", User: &User{Name: "Jordan"}}},
+		{Type: "mention", Mention: &Mention{Type: "database", Database: &DatabaseMention{ID: "d-1"}}},
+		{Type: "mention", Mention: &Mention{Type: "date", Date: &DateMention{Start: "2026-04-22"}}},
+	}
+	got := RenderRichTextWithResolver(context.Background(), in, res)
+	want := "@Jordan{db:d-1}<2026-04-22>"
+	if got != want {
+		t.Errorf("RenderRichTextWithResolver() = %q, want %q", got, want)
+	}
+	if res.calls != 0 {
+		t.Errorf("resolver should not be called for non-page mentions, got calls=%d", res.calls)
+	}
+}
+
+// TestRenderRichTextWithResolver_EmptyInput ensures the with-resolver
+// variant matches RenderRichText's zero-value contract.
+func TestRenderRichTextWithResolver_EmptyInput(t *testing.T) {
+	if got := RenderRichTextWithResolver(context.Background(), nil, NoPageResolver{}); got != "" {
+		t.Errorf("nil input = %q, want empty", got)
+	}
+	if got := RenderRichTextWithResolver(context.Background(), []RichText{}, NoPageResolver{}); got != "" {
+		t.Errorf("empty input = %q, want empty", got)
 	}
 }
