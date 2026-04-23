@@ -29,6 +29,33 @@ func TestNewFileClient(t *testing.T) {
 	}
 }
 
+// TestFiles_NewFileRef pins the constructor's contract: Type is always the
+// FileRefTypeFileUpload constant, ID and Name are passed through verbatim,
+// and ExpiryTime is empty for caller assignment. A test here means a change
+// to the "file_upload" literal has to break either the constant or the
+// struct tag — it cannot silently drift.
+func TestFiles_NewFileRef(t *testing.T) {
+	got := NewFileRef("abc-123", "hello.png")
+	if got == nil {
+		t.Fatal("NewFileRef: got nil")
+	}
+	if got.ID != "abc-123" {
+		t.Errorf("NewFileRef: ID = %q, want %q", got.ID, "abc-123")
+	}
+	if got.Name != "hello.png" {
+		t.Errorf("NewFileRef: Name = %q, want %q", got.Name, "hello.png")
+	}
+	if got.Type != FileRefTypeFileUpload {
+		t.Errorf("NewFileRef: Type = %q, want %q", got.Type, FileRefTypeFileUpload)
+	}
+	if got.Type != "file_upload" {
+		t.Errorf("NewFileRef: Type = %q, want the exact Notion discriminator %q", got.Type, "file_upload")
+	}
+	if got.ExpiryTime != "" {
+		t.Errorf("NewFileRef: ExpiryTime = %q, want empty", got.ExpiryTime)
+	}
+}
+
 // TestFiles_ErrFileUploadNotSupported_MessageReferences11 asserts the error
 // message mentions the pinned version and issue #11, so an operator reading
 // a CLI error knows which tracking issue to watch. Mirrors the teams
