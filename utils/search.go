@@ -7,6 +7,7 @@ package utils
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
@@ -55,11 +56,20 @@ type SearchResult struct {
 	Parent         json.RawMessage `json:"parent,omitempty"`
 	Properties     json.RawMessage `json:"properties,omitempty"`
 	Title          json.RawMessage `json:"title,omitempty"`
-	Raw            json.RawMessage `json:"-"`
+	// Raw is the untouched JSON payload for this result. It exists so the
+	// --json output path can pass the full Notion object through without
+	// re-marshalling (the search endpoint is heterogeneous — pages and
+	// databases in one list — and the typed fields above intentionally
+	// model only what the table view needs). Apply this Raw pass-through
+	// pattern selectively: it's the right call for heterogeneous endpoints
+	// (search, page reads) but overkill for stable-typed responses, where
+	// re-marshalling from typed fields is lossless and simpler.
+	Raw json.RawMessage `json:"-"`
 }
 
 // UnmarshalJSON preserves the raw payload alongside the typed fields so the
-// --json flag can pass through the full Notion response unchanged.
+// --json flag can pass through the full Notion response unchanged. See the
+// Raw field's godoc for guidance on when to adopt this pattern.
 func (r *SearchResult) UnmarshalJSON(data []byte) error {
 	type alias SearchResult
 	var a alias
@@ -142,16 +152,18 @@ func (s *SearchClient) Search(ctx context.Context, req SearchRequest) (*SearchRe
 // SearchAll walks pagination until the server reports HasMore=false or the
 // supplied limit is reached. A non-positive limit means "return everything".
 // When limit is positive, the returned slice is truncated to exactly limit
-// entries (or fewer if the server ran out first).
+// entries (or fewer if the server ran out first). Mid-pagination errors are
+// wrapped with the 1-based page number so callers can see how far the walk
+// got before failing.
 func (s *SearchClient) SearchAll(ctx context.Context, req SearchRequest, limit int) ([]SearchResult, error) {
 	var all []SearchResult
 	cursor := req.StartCursor
-	for {
+	for pageNum := 1; ; pageNum++ {
 		page := req
 		page.StartCursor = cursor
 		resp, err := s.Search(ctx, page)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("search page %d: %w", pageNum, err)
 		}
 		all = append(all, resp.Results...)
 		if limit > 0 && len(all) >= limit {
