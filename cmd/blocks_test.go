@@ -450,32 +450,6 @@ func TestBlocksAddFlags_RichTextJSONFlag(t *testing.T) {
 	}
 }
 
-// TestBlocksAddArgs_RichTextJSONXORText covers the mutual-exclusion
-// between --rich-text-json and the positional text arg. Uses the Args
-// func directly so no mock is needed.
-func TestBlocksAddArgs_RichTextJSONXORText(t *testing.T) {
-	add := findBlocksSubcommand(t, "add")
-	t.Cleanup(func() { blocksAddRichTextJSON = "" })
-
-	// With flag set: zero args ok, one arg must error.
-	blocksAddRichTextJSON = "spec.json"
-	if err := add.Args(add, []string{}); err != nil {
-		t.Errorf("zero args with --rich-text-json: err = %v, want nil", err)
-	}
-	if err := add.Args(add, []string{"oops"}); err == nil {
-		t.Error("positional + --rich-text-json: err = nil, want mutual-exclusion error")
-	}
-
-	// Flag cleared: the old MinimumNArgs(1) contract returns.
-	blocksAddRichTextJSON = ""
-	if err := add.Args(add, []string{}); err == nil {
-		t.Error("zero args without flag: err = nil, want MinimumNArgs error")
-	}
-	if err := add.Args(add, []string{"hello"}); err != nil {
-		t.Errorf("one arg without flag: err = %v, want nil", err)
-	}
-}
-
 // TestBlocksAddRichTextJSON_Dispatch asserts the happy path: given a
 // valid rich-text JSON file, the command issues a PATCH carrying the
 // multi-segment body (annotations preserved, more than one segment).

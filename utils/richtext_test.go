@@ -168,6 +168,16 @@ func TestRenderRichText_Mentions(t *testing.T) {
 			in:   RichText{Type: "mention", PlainText: "@x", Mention: &Mention{Type: "template_variable"}},
 			want: "@x",
 		},
+		{
+			// Locks the <mention> sentinel: when both the typed sub-object
+			// is unknown AND Notion did not supply a PlainText fallback,
+			// renderMention must still emit a non-empty marker so the
+			// segment does not silently disappear. Covers the last
+			// fallback arm in utils/richtext.go:renderMention.
+			name: "unknown mention with empty plain_text yields sentinel",
+			in:   RichText{Type: "mention", Mention: &Mention{Type: "template_variable"}},
+			want: "<mention>",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
