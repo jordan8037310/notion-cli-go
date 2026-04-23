@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -139,6 +140,28 @@ func TestClientDefaultAPIVersion(t *testing.T) {
 	}
 	if gotVersion != NotionAPIVersion {
 		t.Errorf("Notion-Version=%q want %q (default)", gotVersion, NotionAPIVersion)
+	}
+}
+
+// TestDecodeIntoNon2xx covers the non-2xx branch of decodeInto: the server
+// returns HTTP 400 with an error payload, and the caller should get a
+// non-nil error whose message surfaces the status code and the body.
+func TestDecodeIntoNon2xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"bad request"}`))
+	}))
+	defer srv.Close()
+
+	c := NewClient("sk_test", WithBaseURL(srv.URL))
+	bc := NewBlockClient(c)
+
+	_, err := bc.GetBlocks(context.Background(), "pageID")
+	if err == nil {
+		t.Fatal("expected error from 400 response, got nil")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "400") || !strings.Contains(msg, "bad request") {
+		t.Errorf("error=%q should include status 400 and body", msg)
 	}
 }
 
