@@ -111,14 +111,26 @@ func validateUploadPath(path string) error {
 	return nil
 }
 
-// Upload runs the two-step Notion file-upload flow:
+// Upload runs the Notion file-upload flow using the source file's basename
+// as the displayed filename. Equivalent to UploadAs(ctx, path, "").
+func (f *FileClient) Upload(ctx context.Context, path string) (*FileRef, error) {
+	return f.UploadAs(ctx, path, "")
+}
+
+// UploadAs runs the two-step Notion file-upload flow with an optional
+// override for the displayed filename:
 //  1. POST /v1/file_uploads (mode=single_part, filename) → FileUploadResponse
 //  2. POST FileUploadResponse.UploadURL with multipart/form-data containing
 //     the file bytes under the "file" field
 //
+// When displayName is empty the source path's basename is used. When
+// non-empty, displayName is sent as both the create-request `filename`
+// and the multipart "file" part name, so the file lands in Notion under
+// the caller-supplied label rather than the local filesystem name.
+//
 // Returns a FileRef suitable for use as a block/page icon/cover reference.
 // Caller cancellation is honored on both requests.
-func (f *FileClient) Upload(ctx context.Context, path string) (*FileRef, error) {
+func (f *FileClient) UploadAs(ctx context.Context, path, displayName string) (*FileRef, error) {
 	if err := f.checkAuth(); err != nil {
 		return nil, fmt.Errorf("upload file: %w", err)
 	}
@@ -132,6 +144,9 @@ func (f *FileClient) Upload(ctx context.Context, path string) (*FileRef, error) 
 	}
 
 	filename := filepath.Base(path)
+	if displayName != "" {
+		filename = displayName
+	}
 
 	// Step 1: request an upload slot.
 	createReq := FileUploadRequest{
