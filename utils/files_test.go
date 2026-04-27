@@ -192,6 +192,66 @@ func TestFiles_Upload_HappyPath(t *testing.T) {
 	}
 }
 
+// TestFiles_UploadAs_DisplayNameOverride verifies that a non-empty
+// displayName flows through both steps of the upload: it lands in the
+// /v1/file_uploads create-request body, the multipart "file" part name
+// on the pre-signed POST, and the returned FileRef.Name. Regression
+// guard for PR #50 review [P2] — `--name` must not be cosmetic.
+func TestFiles_UploadAs_DisplayNameOverride(t *testing.T) {
+	api := &fakeNotionFileAPI{}
+	srv := httptest.NewServer(api.handler(t))
+	defer srv.Close()
+
+	// Source file lives on disk under one name, but the caller wants
+	// Notion to display a different one. Asserting both ends rules out
+	// regressions where only the create-side or only the multipart-side
+	// gets the override.
+	path := filepath.Join(t.TempDir(), "tmp-source.bin")
+	if err := os.WriteFile(path, []byte("payload-bytes"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	const displayName = "Q1-Plan.pdf"
+
+	client := NewFileClient(NewClient("k", WithBaseURL(srv.URL)))
+	ref, err := client.UploadAs(context.Background(), path, displayName)
+	if err != nil {
+		t.Fatalf("UploadAs: %v", err)
+	}
+	if ref == nil || ref.Name != displayName {
+		t.Errorf("UploadAs ref.Name = %v, want %q", ref, displayName)
+	}
+	if api.uploadedNm != displayName {
+		t.Errorf("UploadAs: create-request filename = %q, want %q", api.uploadedNm, displayName)
+	}
+}
+
+// TestFiles_UploadAs_EmptyOverrideUsesBasename confirms the empty
+// displayName path is equivalent to Upload(): the source basename
+// reaches Notion. This locks in the back-compat contract that
+// Upload(ctx, path) == UploadAs(ctx, path, "").
+func TestFiles_UploadAs_EmptyOverrideUsesBasename(t *testing.T) {
+	api := &fakeNotionFileAPI{}
+	srv := httptest.NewServer(api.handler(t))
+	defer srv.Close()
+
+	path := filepath.Join(t.TempDir(), "screenshot.png")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	client := NewFileClient(NewClient("k", WithBaseURL(srv.URL)))
+	ref, err := client.UploadAs(context.Background(), path, "")
+	if err != nil {
+		t.Fatalf("UploadAs: %v", err)
+	}
+	if ref.Name != "screenshot.png" {
+		t.Errorf("UploadAs ref.Name = %q, want screenshot.png", ref.Name)
+	}
+	if api.uploadedNm != "screenshot.png" {
+		t.Errorf("UploadAs: create-request filename = %q, want screenshot.png", api.uploadedNm)
+	}
+}
+
 // TestFiles_Upload_Step1Error surfaces a non-2xx from step 1 without
 // calling step 2.
 func TestFiles_Upload_Step1Error(t *testing.T) {

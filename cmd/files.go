@@ -77,14 +77,15 @@ returns the file id and name only.`,
 		if err != nil {
 			return jsonErrorOr(cmd, err)
 		}
-		ref, err := fc.Upload(context.Background(), args[0])
+		// Pass --name through to UploadAs so Notion stores the file
+		// under the caller's label (used in the create-request filename
+		// and the multipart "file" part name). When --name is empty,
+		// UploadAs falls back to the source path's basename.
+		ref, err := fc.UploadAs(context.Background(), args[0], blocksAddFileName)
 		if err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("add-file: %w", err))
 		}
-		name := blocksAddFileName
-		if name == "" {
-			name = ref.Name
-		}
+		name := ref.Name
 		if globalJSON {
 			// Emit an action envelope so the caller's --name is visible
 			// in the JSON stream. ref itself is nested so consumers can
