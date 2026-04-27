@@ -509,8 +509,8 @@ func (b *BlockClient) AddRichTextBlock(ctx context.Context, pageID, blockType st
 	if !IsValidBlockType(blockType) {
 		return fmt.Errorf("unsupported block type: %s", blockType)
 	}
-	if blockType == "divider" {
-		return fmt.Errorf("divider blocks do not accept rich text; use AddBlock")
+	if !BlockTypeAcceptsRichText(blockType) {
+		return fmt.Errorf("block type %q does not accept rich text; rich-text-json is only valid for paragraph, heading_1/2/3, bulleted_list_item, numbered_list_item, to_do, toggle, quote, callout, and code", blockType)
 	}
 	if len(rt) == 0 {
 		return fmt.Errorf("rich text must have at least one segment")

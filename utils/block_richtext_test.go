@@ -289,7 +289,13 @@ func TestAddRichTextBlock_Errors(t *testing.T) {
 		wantSub   string
 	}{
 		{"unsupported type", "bogus", []RichText{{Text: Text{Content: "x"}}}, "unsupported block type"},
-		{"divider rejected", "divider", []RichText{{Text: Text{Content: "x"}}}, "divider blocks do not accept"},
+		{"divider rejected", "divider", []RichText{{Text: Text{Content: "x"}}}, "does not accept rich text"},
+		{"image rejected", "image", []RichText{{Text: Text{Content: "x"}}}, "does not accept rich text"},
+		{"file rejected", "file", []RichText{{Text: Text{Content: "x"}}}, "does not accept rich text"},
+		{"video rejected", "video", []RichText{{Text: Text{Content: "x"}}}, "does not accept rich text"},
+		{"embed rejected", "embed", []RichText{{Text: Text{Content: "x"}}}, "does not accept rich text"},
+		{"bookmark rejected", "bookmark", []RichText{{Text: Text{Content: "x"}}}, "does not accept rich text"},
+		{"equation rejected", "equation", []RichText{{Text: Text{Content: "x"}}}, "does not accept rich text"},
 		{"empty rt", "paragraph", nil, "at least one segment"},
 	}
 	for _, tt := range tests {
