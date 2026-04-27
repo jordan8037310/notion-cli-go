@@ -105,6 +105,37 @@ func IsAddableBlockType(blockType string) bool {
 	return AddableBlockTypes[blockType]
 }
 
+// richTextBearingBlockTypes lists the addable block types whose body
+// schema includes a `rich_text` array. AddRichTextBlock builds a payload
+// of the form `<type>: {"rich_text": [...]}`, so only these types yield
+// a valid Notion block. Types like image/file/video/embed/bookmark take
+// a `<media>: {"url": "..."}` shape instead, and equation takes
+// `equation: {"expression": "..."}` — passing rich text to those
+// produces a 400 from Notion.
+var richTextBearingBlockTypes = map[string]bool{
+	"paragraph":          true,
+	"heading_1":          true,
+	"heading_2":          true,
+	"heading_3":          true,
+	"bulleted_list_item": true,
+	"numbered_list_item": true,
+	"to_do":              true,
+	"toggle":             true,
+	"quote":              true,
+	"callout":            true,
+	"code":               true,
+}
+
+// BlockTypeAcceptsRichText reports whether a block type's Notion schema
+// includes a `rich_text` array, and is therefore a valid target for
+// AddRichTextBlock / `blocks add --rich-text-json`. Returns false for
+// divider (no body), media blocks (image/file/video/embed/bookmark —
+// these take a url-bearing object instead), and equation (which takes
+// an `expression` string rather than rich text).
+func BlockTypeAcceptsRichText(blockType string) bool {
+	return richTextBearingBlockTypes[blockType]
+}
+
 // GetSupportedBlockTypeNames returns a sorted list of supported block type names.
 func GetSupportedBlockTypeNames() []string {
 	names := make([]string, 0, len(SupportedBlockTypes))
