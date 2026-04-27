@@ -22,6 +22,7 @@ import (
 // blocks.go's pattern and lets cobra bind them via init().
 var (
 	pagesCreateParent    string
+	pagesCreateParentDB  string
 	pagesCreateTitle     string
 	pagesUpdateTitle     string
 	pagesUpdateProps     []string
@@ -38,7 +39,8 @@ archive/unarchive, move between parents, and duplicate.
 
 Examples:
   notioncli pages get <page-id>
-  notioncli pages create --parent <page-or-db-id> --title "New page"
+  notioncli pages create --parent <page-id> --title "New page"
+  notioncli pages create --parent-database <db-id> --title "New row"
   notioncli pages update <id> --title "Renamed"
   notioncli pages archive <id>
   notioncli pages unarchive <id>
@@ -57,6 +59,24 @@ func newPageClient() (*utils.PageClient, error) {
 	}
 	c := utils.NewClient(apiKey, utils.WithBaseURL(utils.GetBaseURL()))
 	return utils.NewPageClient(c), nil
+}
+
+// buildCreateParent resolves the (--parent, --parent-database) flag pair into
+// a utils.PageParent suitable for CreatePageRequest. Exactly one of the two
+// must be set; both empty or both populated is a usage error. The returned
+// parent has only the matching id field set so the JSON encoder emits the
+// `page_id` or `database_id` discriminator Notion expects, never both.
+func buildCreateParent(pageID, databaseID string) (utils.PageParent, error) {
+	switch {
+	case pageID == "" && databaseID == "":
+		return utils.PageParent{}, fmt.Errorf("create page: --parent or --parent-database is required")
+	case pageID != "" && databaseID != "":
+		return utils.PageParent{}, fmt.Errorf("create page: --parent and --parent-database are mutually exclusive")
+	case databaseID != "":
+		return utils.PageParent{DatabaseID: databaseID}, nil
+	default:
+		return utils.PageParent{PageID: pageID}, nil
+	}
 }
 
 // parseProperty splits "key=value" from the --property flag. Values are sent
@@ -107,19 +127,27 @@ var pagesGetCmd = &cobra.Command{
 }
 
 // pagesCreateCmd creates a new page under the provided parent.
+//
+// Notion distinguishes page parents (parent.page_id) from database parents
+// (parent.database_id) at the wire level, so the CLI surfaces them as two
+// mutually-exclusive flags: --parent for a page parent, --parent-database
+// for a database row. Earlier versions accepted any id under --parent and
+// always serialised it as page_id, which 400'd against database parents
+// with "parent is expected to be database" — see PR #50 review.
 var pagesCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "Create a new page under --parent",
+	Short: "Create a new page under --parent (page) or --parent-database",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if pagesCreateParent == "" {
-			return jsonErrorOr(cmd, fmt.Errorf("create page: --parent is required"))
+		parent, err := buildCreateParent(pagesCreateParent, pagesCreateParentDB)
+		if err != nil {
+			return jsonErrorOr(cmd, err)
 		}
 		pc, err := newPageClient()
 		if err != nil {
 			return jsonErrorOr(cmd, err)
 		}
 		page, err := pc.Create(context.Background(), utils.CreatePageRequest{
-			Parent: utils.PageParent{PageID: pagesCreateParent},
+			Parent: parent,
 			Title:  pagesCreateTitle,
 		})
 		if err != nil {
@@ -327,7 +355,8 @@ func init() {
 	pagesCmd.AddCommand(pagesMoveCmd)
 	pagesCmd.AddCommand(pagesDuplicateCmd)
 
-	pagesCreateCmd.Flags().StringVar(&pagesCreateParent, "parent", "", "Parent page or database ID (required)")
+	pagesCreateCmd.Flags().StringVar(&pagesCreateParent, "parent", "", "Parent page ID (mutually exclusive with --parent-database)")
+	pagesCreateCmd.Flags().StringVar(&pagesCreateParentDB, "parent-database", "", "Parent database ID for database-parented pages (mutually exclusive with --parent)")
 	pagesCreateCmd.Flags().StringVar(&pagesCreateTitle, "title", "", "Title for the new page")
 
 	pagesUpdateCmd.Flags().StringVar(&pagesUpdateTitle, "title", "", "New title for the page")

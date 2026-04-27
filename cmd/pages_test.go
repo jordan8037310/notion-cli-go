@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -153,19 +154,32 @@ func TestPagesParseProperty(t *testing.T) {
 }
 
 // pagesDispatchServer swaps the cmd-layer mock with a pages-aware handler.
-// It returns a counter map keyed by method+path and a close func.
+// It returns a counter map keyed by method+path, the most recent request
+// body for each (method+path), and a close func. Body capture lets tests
+// assert wire shapes — e.g. the parent discriminator on POST /pages —
+// without standing up a separate fixture.
 type pagesDispatchServer struct {
-	srv   *httptest.Server
-	mu    sync.Mutex
-	calls map[string]int64
+	srv    *httptest.Server
+	mu     sync.Mutex
+	calls  map[string]int64
+	bodies map[string][]byte
 }
 
 func newPagesDispatchServer(t *testing.T) *pagesDispatchServer {
 	t.Helper()
-	d := &pagesDispatchServer{calls: map[string]int64{}}
+	d := &pagesDispatchServer{calls: map[string]int64{}, bodies: map[string][]byte{}}
 	d.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.Method + " " + r.URL.Path
+		var body []byte
+		if r.Body != nil {
+			body, _ = io.ReadAll(r.Body)
+			_ = r.Body.Close()
+		}
 		d.mu.Lock()
-		d.calls[r.Method+" "+r.URL.Path]++
+		d.calls[key]++
+		if len(body) > 0 {
+			d.bodies[key] = body
+		}
 		d.mu.Unlock()
 		switch {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/pages/"):
@@ -210,6 +224,15 @@ func (d *pagesDispatchServer) count(key string) int64 {
 	return d.calls[key]
 }
 
+// body returns the most recent request body captured for the given
+// method+path key. Returns nil when nothing was recorded; tests should
+// fail loudly on a nil body for endpoints they expect to have hit.
+func (d *pagesDispatchServer) body(key string) []byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.bodies[key]
+}
+
 // withPagesEnv swaps in the pages dispatch server and sets env the way the
 // blocks tests do.
 func withPagesEnv(t *testing.T) *pagesDispatchServer {
@@ -228,6 +251,7 @@ func withPagesEnv(t *testing.T) *pagesDispatchServer {
 // persists bound flag values across executions.
 func resetPagesFlags() {
 	pagesCreateParent = ""
+	pagesCreateParentDB = ""
 	pagesCreateTitle = ""
 	pagesUpdateTitle = ""
 	pagesUpdateProps = nil
@@ -253,7 +277,8 @@ func TestPagesGetDispatch(t *testing.T) {
 	}
 }
 
-// TestPagesCreateDispatch runs `pages create --parent p --title t`.
+// TestPagesCreateDispatch runs `pages create --parent p --title t` and
+// asserts the body serialises a page-id parent (not a database id).
 func TestPagesCreateDispatch(t *testing.T) {
 	d := withPagesEnv(t)
 	resetPagesFlags()
@@ -265,6 +290,68 @@ func TestPagesCreateDispatch(t *testing.T) {
 	}
 	if got := d.count("POST /pages"); got != 1 {
 		t.Errorf("POST /pages count=%d want 1 (calls=%v)", got, d.calls)
+	}
+	body := d.body("POST /pages")
+	if body == nil {
+		t.Fatal("POST /pages: no body captured")
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	parent, _ := got["parent"].(map[string]interface{})
+	if parent["page_id"] != "parentID" {
+		t.Errorf("parent.page_id=%v want parentID (parent=%v)", parent["page_id"], parent)
+	}
+	if _, hasDB := parent["database_id"]; hasDB {
+		t.Errorf("parent must not include database_id when --parent set: %v", parent)
+	}
+}
+
+// TestPagesCreateDatabaseParent confirms --parent-database emits the
+// database_id discriminator the API requires for database-parented
+// pages. Regression test for PR #50 review [P1].
+func TestPagesCreateDatabaseParent(t *testing.T) {
+	d := withPagesEnv(t)
+	resetPagesFlags()
+	resetRootCmdArgs()
+
+	rootCmd.SetArgs([]string{"pages", "create", "--parent-database", "dbID", "--title", "Row"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	body := d.body("POST /pages")
+	if body == nil {
+		t.Fatal("POST /pages: no body captured")
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	parent, _ := got["parent"].(map[string]interface{})
+	if parent["database_id"] != "dbID" {
+		t.Errorf("parent.database_id=%v want dbID (parent=%v)", parent["database_id"], parent)
+	}
+	if _, hasPage := parent["page_id"]; hasPage {
+		t.Errorf("parent must not include page_id when --parent-database set: %v", parent)
+	}
+}
+
+// TestPagesCreateBothParentFlagsErrors confirms the CLI rejects the
+// ambiguous case where both flags are populated, before any HTTP call.
+func TestPagesCreateBothParentFlagsErrors(t *testing.T) {
+	d := withPagesEnv(t)
+	resetPagesFlags()
+	resetRootCmdArgs()
+
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
+	rootCmd.SetArgs([]string{"pages", "create", "--parent", "p", "--parent-database", "db"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected error when both --parent and --parent-database set, got nil")
+	}
+	if got := d.count("POST /pages"); got != 0 {
+		t.Errorf("expected no POST /pages on conflicting flags, got %d", got)
 	}
 }
 
