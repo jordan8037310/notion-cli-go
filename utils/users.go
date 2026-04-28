@@ -64,10 +64,25 @@ func NewUserClient(c *Client) *UserClient {
 	return &UserClient{c: c}
 }
 
+// checkAuth mirrors PageClient.checkAuth so missing-credential errors
+// surface as ErrMissingAPIKey rather than panicking on a nil client or
+// falling through to an opaque 401 from Notion. Library callers that
+// pass a nil *Client (e.g. NewUserClient(nil) in a test seam) get a
+// typed error instead of a runtime panic.
+func (u *UserClient) checkAuth() error {
+	if u == nil || u.c == nil || u.c.apiKey == "" {
+		return ErrMissingAPIKey
+	}
+	return nil
+}
+
 // ListPage fetches a single page of users. Pass an empty cursor for the
 // first page; subsequent calls should pass the NextCursor returned by the
 // previous page.
 func (u *UserClient) ListPage(ctx context.Context, cursor string) (*UserList, error) {
+	if err := u.checkAuth(); err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
 	path := "/users"
 	if cursor != "" {
 		path += "?start_cursor=" + url.QueryEscape(cursor)
@@ -109,6 +124,9 @@ func (u *UserClient) List(ctx context.Context) ([]User, error) {
 
 // Get retrieves a single user by id.
 func (u *UserClient) Get(ctx context.Context, id string) (*User, error) {
+	if err := u.checkAuth(); err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
 	if id == "" {
 		return nil, fmt.Errorf("get user: id is required")
 	}
@@ -130,6 +148,9 @@ func (u *UserClient) Get(ctx context.Context, id string) (*User, error) {
 // Me returns the bot user associated with the integration token in use.
 // Corresponds to GET /v1/users/me.
 func (u *UserClient) Me(ctx context.Context) (*User, error) {
+	if err := u.checkAuth(); err != nil {
+		return nil, fmt.Errorf("get self: %w", err)
+	}
 	req, err := u.c.newRequest(ctx, http.MethodGet, "/users/me", nil)
 	if err != nil {
 		return nil, err
