@@ -334,6 +334,36 @@ func TestList_JSON(t *testing.T) {
 	}
 }
 
+// TestList_JSON_NoLocalTimezone confirms `list --json` does not fail
+// on machines that ship without LOCAL_TIMEZONE set. JSON mode emits raw
+// block objects with un-humanised timestamps, so the timezone lookup
+// belongs strictly on the human path. Regression guard for PR #50
+// second-pass review [P2].
+func TestList_JSON_NoLocalTimezone(t *testing.T) {
+	_ = withCmdEnv(t)
+	// withCmdEnv pins LOCAL_TIMEZONE=UTC for human-mode determinism;
+	// override it here so the assertion is meaningful — the bug only
+	// reproduces when the env var is absent.
+	t.Setenv("LOCAL_TIMEZONE", "")
+	if err := os.Unsetenv("LOCAL_TIMEZONE"); err != nil {
+		t.Fatalf("unset LOCAL_TIMEZONE: %v", err)
+	}
+
+	resetGlobalOutputFlags()
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"list", "--json"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("list --json failed without LOCAL_TIMEZONE: %v", err)
+	}
+	objs := assertNDJSON(t, out.String())
+	if len(objs) == 0 {
+		t.Fatalf("want at least 1 todo block, got 0: %q", out.String())
+	}
+}
+
 // TestAdd_JSON runs `add "task" --json` and asserts the ok envelope.
 func TestAdd_JSON(t *testing.T) {
 	_ = withCmdEnv(t)
