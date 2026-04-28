@@ -3,6 +3,7 @@ package utils
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -252,6 +253,42 @@ func TestMe_Happy(t *testing.T) {
 	}
 	if got.Bot == nil || got.Bot.WorkspaceName != "Acme" {
 		t.Errorf("unexpected Bot: %+v", got.Bot)
+	}
+}
+
+// TestUserClient_MissingAPIKey verifies every UserClient method that
+// hits the network surfaces ErrMissingAPIKey when the underlying Client
+// has an empty API key, instead of falling through to an opaque 401
+// from Notion. Mirrors the contract on PageClient/TeamClient/etc.
+// Regression guard for PR #50 second-pass review [P2].
+func TestUserClient_MissingAPIKey(t *testing.T) {
+	client := NewUserClient(NewClient("", WithBaseURL("http://127.0.0.1:0")))
+
+	if _, err := client.List(context.Background()); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("List: err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+	if _, err := client.ListPage(context.Background(), ""); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("ListPage: err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+	if _, err := client.Get(context.Background(), "user-id"); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("Get: err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+	if _, err := client.Me(context.Background()); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("Me: err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+}
+
+// TestUserClient_NilClientNoPanic confirms calling methods on a
+// UserClient whose underlying *Client is nil returns ErrMissingAPIKey
+// instead of panicking. Library callers that wire UserClient through a
+// test seam may pass nil; the failure mode should be a typed error.
+func TestUserClient_NilClientNoPanic(t *testing.T) {
+	client := NewUserClient(nil)
+	if _, err := client.List(context.Background()); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("List(nil client): err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+	if _, err := client.Me(context.Background()); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("Me(nil client): err = %v, want errors.Is ErrMissingAPIKey", err)
 	}
 }
 
