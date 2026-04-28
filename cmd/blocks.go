@@ -178,6 +178,14 @@ Examples:
 		return cobra.MinimumNArgs(1)(cmd, args)
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Suppress cobra's default "Error: ..." + usage block on non-nil
+		// return so the colored color.Red lines below are the only error
+		// the user sees. Without this, cobra would double-print every
+		// error (once via color.Red, once via cobra's own handler) and
+		// dump the help block under each failure.
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+
 		// Validate block type
 		if blockType == "" {
 			blockType = "paragraph"
@@ -190,7 +198,7 @@ Examples:
 				return jsonErrorOr(cmd, err)
 			}
 			color.Red("Error: %v", err)
-			return nil
+			return err
 		}
 
 		if !utils.IsAddableBlockType(blockType) {
@@ -199,7 +207,7 @@ Examples:
 				return jsonErrorOr(cmd, err)
 			}
 			color.Red("Error: %v", err)
-			return nil
+			return err
 		}
 
 		notionAPIKey, _ := utils.SetAPIConfig()
@@ -219,7 +227,7 @@ Examples:
 					return jsonErrorOr(cmd, wrapped)
 				}
 				color.Red("Error: %v", wrapped)
-				return nil
+				return wrapped
 			}
 			rt, err := utils.ParseRichTextJSON(raw)
 			if err != nil {
@@ -228,7 +236,7 @@ Examples:
 					return jsonErrorOr(cmd, wrapped)
 				}
 				color.Red("Error: %v", wrapped)
-				return nil
+				return wrapped
 			}
 			if err := utils.AddRichTextBlock(notionAPIKey, pageID, blockType, rt); err != nil {
 				wrapped := fmt.Errorf("blocks add: %w", err)
@@ -236,7 +244,7 @@ Examples:
 					return jsonErrorOr(cmd, wrapped)
 				}
 				color.Red("Error adding block: %v", err)
-				return nil
+				return wrapped
 			}
 			if globalJSON {
 				return emitOK(cmd.OutOrStdout(), map[string]interface{}{
@@ -254,11 +262,12 @@ Examples:
 		opts := blocksAddOptions()
 
 		if err := utils.AddBlock(notionAPIKey, pageID, blockType, text, opts...); err != nil {
+			wrapped := fmt.Errorf("blocks add: %w", err)
 			if globalJSON {
-				return jsonErrorOr(cmd, fmt.Errorf("blocks add: %w", err))
+				return jsonErrorOr(cmd, wrapped)
 			}
 			color.Red("Error adding block: %v", err)
-			return nil
+			return wrapped
 		}
 
 		if globalJSON {

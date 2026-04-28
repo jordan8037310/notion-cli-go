@@ -371,7 +371,9 @@ func TestBlocksAddDispatch_BookmarkWithURLFlag(t *testing.T) {
 }
 
 // TestBlocksAdd_RejectsNonAddable asserts that `blocks add … -t table`
-// surfaces a human-readable error and does NOT issue a PATCH.
+// surfaces a human-readable error, propagates it to cobra so the process
+// exits non-zero, and does NOT issue a PATCH. Regression guard for
+// PR #50 second-pass review [P1] — text-mode failures used to return nil.
 func TestBlocksAdd_RejectsNonAddable(t *testing.T) {
 	srv := withCmdEnv(t)
 
@@ -390,11 +392,71 @@ func TestBlocksAdd_RejectsNonAddable(t *testing.T) {
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
 	rootCmd.SetArgs([]string{"blocks", "add", "ignored", "-t", "table"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute returned err: %v (expected swallowed)", err)
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("rootCmd.Execute returned nil; expected non-nil so the process exits non-zero")
+	}
+	if !strings.Contains(err.Error(), "cannot be created via") {
+		t.Errorf("err = %v; want substring 'cannot be created via'", err)
 	}
 	if atomic.LoadInt64(&patched) != 0 {
 		t.Error("blocks add -t table should not PATCH the API")
+	}
+}
+
+// TestBlocksAdd_RejectsUnsupportedType asserts an unknown block type
+// errors out before any HTTP traffic and the error is propagated to
+// cobra (non-nil RunE return).
+func TestBlocksAdd_RejectsUnsupportedType(t *testing.T) {
+	srv := withCmdEnv(t)
+	var patched int64
+	origHandler := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			atomic.AddInt64(&patched, 1)
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+
+	resetBlocksAddFlags()
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "add", "ignored", "-t", "not-a-real-type"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error on unsupported block type, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported block type") {
+		t.Errorf("err = %v; want substring 'unsupported block type'", err)
+	}
+	if atomic.LoadInt64(&patched) != 0 {
+		t.Error("blocks add with unsupported type should not PATCH the API")
+	}
+}
+
+// TestBlocksAdd_RichTextJSONUnreadableFile confirms a missing
+// --rich-text-json file produces a non-nil error from cobra so callers
+// don't silently treat the failure as success.
+func TestBlocksAdd_RichTextJSONUnreadableFile(t *testing.T) {
+	_ = withCmdEnv(t)
+	resetBlocksAddFlags()
+	resetRootCmdArgs()
+
+	missing := "/nonexistent/path/should-not-exist.json"
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "add", "--rich-text-json", missing, "-t", "paragraph"})
+	t.Cleanup(func() { blocksAddRichTextJSON = "" })
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error on unreadable --rich-text-json file, got nil")
+	}
+	if !strings.Contains(err.Error(), "read --rich-text-json") {
+		t.Errorf("err = %v; want substring 'read --rich-text-json'", err)
 	}
 }
 
