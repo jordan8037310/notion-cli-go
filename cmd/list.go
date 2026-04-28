@@ -22,13 +22,12 @@ var listCmd = &cobra.Command{
 		if err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("list: %w", err))
 		}
-		localTimezone, err := utils.GetLocalTimeZone()
-		if err != nil {
-			return jsonErrorOr(cmd, fmt.Errorf("list: resolve local time zone: %w", err))
-		}
-		// In --json mode we want the raw Notion block objects so consumers
-		// can jq on them; the formatted lines are for humans only. This
-		// mirrors the blocks list split (typed objects pass-through).
+
+		// JSON path emits raw Notion block objects, so timestamps are
+		// never humanised — resolving LOCAL_TIMEZONE on this branch
+		// would just fail loudly on machines that ship without one set.
+		// The human path below is the only consumer of localTimezone,
+		// so the lookup moves to right before GetToDoBlocks.
 		if globalJSON {
 			// GetAllBlocks with "to_do" mirrors the human list by only
 			// returning to-do blocks. emitList picks NDJSON or a pretty
@@ -40,6 +39,10 @@ var listCmd = &cobra.Command{
 			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), blocks))
 		}
 
+		localTimezone, err := utils.GetLocalTimeZone()
+		if err != nil {
+			return fmt.Errorf("list: resolve local time zone: %w", err)
+		}
 		brightWhite := color.New(color.FgHiWhite).SprintFunc()
 		blocks, err := utils.GetToDoBlocks(notionAPIKey, pageID, localTimezone)
 		if err != nil {
