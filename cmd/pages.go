@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"notioncli/utils"
@@ -79,10 +80,29 @@ func buildCreateParent(pageID, databaseID string) (utils.PageParent, error) {
 	}
 }
 
-// parseProperty splits "key=value" from the --property flag. Values are sent
-// as plain-text rich_text entries because without a schema lookup we cannot
-// infer the target property type; callers that need typed properties should
-// use the lower-level PageClient.Update with a full Properties map.
+// parseProperty splits "key=value" from the --property flag and emits the
+// Notion property payload that matches the value's intended type. Three
+// forms are accepted, in priority order:
+//
+//  1. Raw JSON object pass-through:
+//     Key={"select":{"name":"Done"}}
+//     Anything starting with `{` is parsed as JSON and used verbatim.
+//     Power-user escape hatch — the caller already knows the wire shape.
+//
+//  2. Type-prefixed shorthand:
+//     Key=<type>:<value>
+//     where <type> is one of: status, select, multi_select, number,
+//     checkbox, date, url, email, phone (alias: phone_number), text,
+//     title. Multi-select splits on commas, date accepts ISO 8601 plus
+//     the `start..end` range form, number parses as float64.
+//
+//  3. Bare value: Key=Value
+//     Falls back to rich_text. Preserves existing scripts that rely on
+//     the historical default.
+//
+// Without this typed surface, every property that isn't title/rich_text
+// (status, select, multi_select, number, date, checkbox, url, email,
+// phone) 400s with "<key> is expected to be <type>" — see issue #51.
 func parseProperty(raw string) (string, map[string]interface{}, error) {
 	idx := strings.Index(raw, "=")
 	if idx < 1 {
@@ -93,6 +113,34 @@ func parseProperty(raw string) (string, map[string]interface{}, error) {
 	if key == "" {
 		return "", nil, fmt.Errorf("invalid --property %q, key is empty", raw)
 	}
+
+	// 1. Raw JSON pass-through. The user already typed a Notion-shaped
+	// payload and just wants it forwarded. We require it to be a JSON
+	// object (not array/string/number) so a bare value of "{}" is the
+	// only ambiguity, which is intentional — empty object is a valid
+	// "clear this property" payload on Notion's side.
+	if strings.HasPrefix(strings.TrimSpace(value), "{") {
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(value), &obj); err != nil {
+			return "", nil, fmt.Errorf("invalid --property %q: looks like JSON but failed to parse: %w", raw, err)
+		}
+		return key, obj, nil
+	}
+
+	// 2. Type-prefixed shorthand. Only the first colon is treated as the
+	// separator so values may contain colons (e.g. URLs, ISO times).
+	if pIdx := strings.Index(value, ":"); pIdx > 0 {
+		typ := value[:pIdx]
+		rest := value[pIdx+1:]
+		if payload, ok, err := buildTypedProperty(typ, rest); ok {
+			if err != nil {
+				return "", nil, fmt.Errorf("invalid --property %q: %w", raw, err)
+			}
+			return key, payload, nil
+		}
+	}
+
+	// 3. Bare value → rich_text (back-compat).
 	payload := map[string]interface{}{
 		"rich_text": []map[string]interface{}{
 			{
@@ -102,6 +150,84 @@ func parseProperty(raw string) (string, map[string]interface{}, error) {
 		},
 	}
 	return key, payload, nil
+}
+
+// buildTypedProperty translates a (type, value) pair into the property
+// payload Notion expects. The bool return distinguishes "type is one we
+// handle" (true, with maybe an err for malformed input) from "type
+// prefix didn't match anything we know about" (false, no err) so the
+// caller can fall through to the rich_text default for prefixes that
+// happen to look like type:value but aren't.
+func buildTypedProperty(typ, value string) (map[string]interface{}, bool, error) {
+	switch typ {
+	case "status":
+		return map[string]interface{}{"status": map[string]interface{}{"name": value}}, true, nil
+	case "select":
+		return map[string]interface{}{"select": map[string]interface{}{"name": value}}, true, nil
+	case "multi_select":
+		// Comma-split; trim whitespace around each option name so
+		// "a, b ,c" → ["a","b","c"]. An empty value (multi_select:)
+		// emits an empty list which clears the property on Notion.
+		var items []map[string]interface{}
+		if value != "" {
+			for _, name := range strings.Split(value, ",") {
+				name = strings.TrimSpace(name)
+				if name == "" {
+					continue
+				}
+				items = append(items, map[string]interface{}{"name": name})
+			}
+		}
+		if items == nil {
+			items = []map[string]interface{}{}
+		}
+		return map[string]interface{}{"multi_select": items}, true, nil
+	case "number":
+		n, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return nil, true, fmt.Errorf("number value %q is not a valid float: %w", value, err)
+		}
+		return map[string]interface{}{"number": n}, true, nil
+	case "checkbox":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return nil, true, fmt.Errorf("checkbox value %q is not a boolean (try true/false): %w", value, err)
+		}
+		return map[string]interface{}{"checkbox": b}, true, nil
+	case "date":
+		// ISO 8601 single date or "start..end" range. We don't validate
+		// the date format ourselves — Notion does that server-side and
+		// surfaces a precise error. Empty value clears the property.
+		if value == "" {
+			return map[string]interface{}{"date": nil}, true, nil
+		}
+		if start, end, ok := strings.Cut(value, ".."); ok {
+			return map[string]interface{}{"date": map[string]interface{}{"start": start, "end": end}}, true, nil
+		}
+		return map[string]interface{}{"date": map[string]interface{}{"start": value}}, true, nil
+	case "url":
+		return map[string]interface{}{"url": value}, true, nil
+	case "email":
+		return map[string]interface{}{"email": value}, true, nil
+	case "phone", "phone_number":
+		return map[string]interface{}{"phone_number": value}, true, nil
+	case "text":
+		// Explicit alias for the rich_text default — useful when the
+		// value happens to start with "{" or contain "<known>:" and the
+		// caller wants to force plain-text interpretation.
+		return map[string]interface{}{
+			"rich_text": []map[string]interface{}{
+				{"type": "text", "text": map[string]interface{}{"content": value}},
+			},
+		}, true, nil
+	case "title":
+		return map[string]interface{}{
+			"title": []map[string]interface{}{
+				{"type": "text", "text": map[string]interface{}{"content": value}},
+			},
+		}, true, nil
+	}
+	return nil, false, nil
 }
 
 // pagesGetCmd retrieves a page by ID.
@@ -360,7 +486,21 @@ func init() {
 	pagesCreateCmd.Flags().StringVar(&pagesCreateTitle, "title", "", "Title for the new page")
 
 	pagesUpdateCmd.Flags().StringVar(&pagesUpdateTitle, "title", "", "New title for the page")
-	pagesUpdateCmd.Flags().StringArrayVar(&pagesUpdateProps, "property", nil, "Set a property as key=value (repeatable)")
+	pagesUpdateCmd.Flags().StringArrayVar(&pagesUpdateProps, "property", nil,
+		`Set a property (repeatable). Three forms:
+  Key=Value                        rich_text (back-compat)
+  Key=<type>:<value>               typed: status, select, multi_select,
+                                     number, checkbox, date, url, email,
+                                     phone, text, title
+  Key={"select":{"name":"Done"}}   raw JSON pass-through
+
+Examples:
+  --property "Status=status:Done"
+  --property "Brand=select:FacetInteractive.com"
+  --property "Tags=multi_select:alpha,beta"
+  --property "Count=number:42"
+  --property "Done=checkbox:true"
+  --property "Due=date:2026-05-01..2026-05-08"`)
 
 	pagesMoveCmd.Flags().StringVar(&pagesMoveParent, "parent", "", "New parent page ID (required)")
 
