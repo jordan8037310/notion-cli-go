@@ -30,13 +30,13 @@ const (
 // individual tests opt into success by setting the corresponding handler
 // flag.
 type fetchMock struct {
-	srv      *httptest.Server
-	mu       sync.Mutex
-	calls    map[string]int
-	pageOK   bool
-	dbOK     bool
-	pageErr  int // optional non-404 error code on /pages
-	dbErr    int // optional non-404 error code on /databases
+	srv     *httptest.Server
+	mu      sync.Mutex
+	calls   map[string]int
+	pageOK  bool
+	dbOK    bool
+	pageErr int // optional non-404 error code on /pages
+	dbErr   int // optional non-404 error code on /databases
 }
 
 func newFetchMock(t *testing.T) *fetchMock {
