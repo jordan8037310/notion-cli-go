@@ -116,6 +116,23 @@ jobs:
           pattern: notioncli-*
           merge-multiple: true
 
+      - name: Verify tag exists on origin
+        env:
+          VERSION: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # workflow_dispatch lets a maintainer re-run the release for a
+          # given tag, but the source-tarball curl below depends on the
+          # tag actually being published on origin so GitHub serves the
+          # auto-generated archive. Fail fast with a clear instruction
+          # instead of the opaque "curl 404" the next step would emit
+          # otherwise (PR #50 second-pass review).
+          git fetch origin "refs/tags/${VERSION}:refs/tags/${VERSION}" 2>/dev/null || true
+          if ! git rev-parse --verify "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Tag ${VERSION} not found on origin. Push the tag first (\`git tag -a ${VERSION} -m ${VERSION} && git push origin ${VERSION}\`) before re-running this workflow."
+            exit 1
+          fi
+
       - name: Compute source tarball sha256
         id: src_sha
         env:
@@ -126,8 +143,20 @@ jobs:
           # same artifact homebrew downloads. Pull it down, hash it, and
           # surface the digest both as a step output and in the release
           # body so the tap formula's `sha256` line is a copy-paste away.
+          # Brief retry — GitHub takes a few seconds to publish the
+          # auto-tarball after a fresh tag push.
           url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${VERSION}.tar.gz"
-          curl -fsSL -o source.tar.gz "$url"
+          for i in 1 2 3 4 5; do
+            if curl -fsSL -o source.tar.gz "$url"; then
+              break
+            fi
+            echo "Source tarball not yet published (attempt $i); retrying in 5s..."
+            sleep 5
+          done
+          if [ ! -s source.tar.gz ]; then
+            echo "::error::Source tarball at ${url} did not become available after 25s."
+            exit 1
+          fi
           sha=$(sha256sum source.tar.gz | awk '{print $1}')
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
           echo "Source tarball sha256: ${sha}"
