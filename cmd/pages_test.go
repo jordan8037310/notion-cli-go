@@ -153,6 +153,222 @@ func TestPagesParseProperty(t *testing.T) {
 	}
 }
 
+// TestPagesParseProperty_TypedShapes pins the wire shape parseProperty
+// emits for each typed-property prefix. These are the payloads Notion's
+// PATCH /v1/pages/{id} validates against; sending the wrong shape 400s
+// with "<key> is expected to be <type>" — see issue #51.
+func TestPagesParseProperty_TypedShapes(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantKey   string
+		wantValue map[string]interface{}
+	}{
+		{
+			name:    "status",
+			input:   "Status=status:In Progress",
+			wantKey: "Status",
+			wantValue: map[string]interface{}{
+				"status": map[string]interface{}{"name": "In Progress"},
+			},
+		},
+		{
+			name:    "select",
+			input:   "Brand=select:FacetInteractive.com",
+			wantKey: "Brand",
+			wantValue: map[string]interface{}{
+				"select": map[string]interface{}{"name": "FacetInteractive.com"},
+			},
+		},
+		{
+			name:    "multi_select with whitespace",
+			input:   "Tags=multi_select:alpha, beta ,gamma",
+			wantKey: "Tags",
+			wantValue: map[string]interface{}{
+				"multi_select": []map[string]interface{}{
+					{"name": "alpha"},
+					{"name": "beta"},
+					{"name": "gamma"},
+				},
+			},
+		},
+		{
+			name:    "multi_select empty clears",
+			input:   "Tags=multi_select:",
+			wantKey: "Tags",
+			wantValue: map[string]interface{}{
+				"multi_select": []map[string]interface{}{},
+			},
+		},
+		{
+			name:      "number",
+			input:     "Count=number:42.5",
+			wantKey:   "Count",
+			wantValue: map[string]interface{}{"number": 42.5},
+		},
+		{
+			name:      "checkbox true",
+			input:     "Done=checkbox:true",
+			wantKey:   "Done",
+			wantValue: map[string]interface{}{"checkbox": true},
+		},
+		{
+			name:      "checkbox false",
+			input:     "Done=checkbox:false",
+			wantKey:   "Done",
+			wantValue: map[string]interface{}{"checkbox": false},
+		},
+		{
+			name:    "date single",
+			input:   "Due=date:2026-05-01",
+			wantKey: "Due",
+			wantValue: map[string]interface{}{
+				"date": map[string]interface{}{"start": "2026-05-01"},
+			},
+		},
+		{
+			name:    "date range",
+			input:   "Due=date:2026-05-01..2026-05-08",
+			wantKey: "Due",
+			wantValue: map[string]interface{}{
+				"date": map[string]interface{}{"start": "2026-05-01", "end": "2026-05-08"},
+			},
+		},
+		{
+			name:      "url with colons in value",
+			input:     "Site=url:https://notion.so/abc",
+			wantKey:   "Site",
+			wantValue: map[string]interface{}{"url": "https://notion.so/abc"},
+		},
+		{
+			name:      "email",
+			input:     "Contact=email:hi@example.com",
+			wantKey:   "Contact",
+			wantValue: map[string]interface{}{"email": "hi@example.com"},
+		},
+		{
+			name:      "phone alias",
+			input:     "Cell=phone:+1-555-0100",
+			wantKey:   "Cell",
+			wantValue: map[string]interface{}{"phone_number": "+1-555-0100"},
+		},
+		{
+			name:      "phone_number canonical",
+			input:     "Cell=phone_number:+1-555-0100",
+			wantKey:   "Cell",
+			wantValue: map[string]interface{}{"phone_number": "+1-555-0100"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key, val, err := parseProperty(tt.input)
+			if err != nil {
+				t.Fatalf("parseProperty(%q): %v", tt.input, err)
+			}
+			if key != tt.wantKey {
+				t.Errorf("key = %q, want %q", key, tt.wantKey)
+			}
+			if !propertyEqual(val, tt.wantValue) {
+				t.Errorf("payload mismatch:\n got: %#v\nwant: %#v", val, tt.wantValue)
+			}
+		})
+	}
+}
+
+// TestPagesParseProperty_RawJSONPassthrough confirms a JSON object
+// value is forwarded verbatim. This is the power-user escape hatch for
+// property shapes the typed prefixes don't cover (relations, people,
+// files, formula targets, rollup overrides, etc.).
+func TestPagesParseProperty_RawJSONPassthrough(t *testing.T) {
+	key, val, err := parseProperty(`Status={"select":{"name":"Done"}}`)
+	if err != nil {
+		t.Fatalf("parseProperty: %v", err)
+	}
+	if key != "Status" {
+		t.Errorf("key = %q, want Status", key)
+	}
+	want := map[string]interface{}{"select": map[string]interface{}{"name": "Done"}}
+	if !propertyEqual(val, want) {
+		t.Errorf("payload mismatch:\n got: %#v\nwant: %#v", val, want)
+	}
+}
+
+// TestPagesParseProperty_BareValueFallsBackToRichText guarantees
+// scripts that have always passed `Key=Value` keep working — the bare
+// form still serialises as rich_text.
+func TestPagesParseProperty_BareValueFallsBackToRichText(t *testing.T) {
+	_, val, err := parseProperty("Note=hello world")
+	if err != nil {
+		t.Fatalf("parseProperty: %v", err)
+	}
+	rt, ok := val["rich_text"].([]map[string]interface{})
+	if !ok || len(rt) != 1 {
+		t.Fatalf("expected rich_text slice with one segment, got %#v", val)
+	}
+	text, _ := rt[0]["text"].(map[string]interface{})
+	if text["content"] != "hello world" {
+		t.Errorf("rich_text content = %v, want 'hello world'", text["content"])
+	}
+}
+
+// TestPagesParseProperty_TypedErrors covers the malformed-input paths
+// for the typed prefixes (number/checkbox/JSON).
+func TestPagesParseProperty_TypedErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantSub string
+	}{
+		{"bad number", "Count=number:not-a-number", "not a valid float"},
+		{"bad checkbox", "Done=checkbox:maybe", "not a boolean"},
+		{"bad json", `X={not valid json`, "failed to parse"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := parseProperty(tc.input)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("err = %v, want substring %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+// TestPagesParseProperty_UnknownPrefixFallsThrough confirms that a
+// value of "weird:foo" (where "weird" isn't a known type prefix) is
+// treated as bare rich_text rather than erroring — preserves
+// back-compat for legacy values that happen to contain a colon.
+func TestPagesParseProperty_UnknownPrefixFallsThrough(t *testing.T) {
+	_, val, err := parseProperty("Note=weird:foo")
+	if err != nil {
+		t.Fatalf("parseProperty: %v", err)
+	}
+	rt, ok := val["rich_text"].([]map[string]interface{})
+	if !ok || len(rt) != 1 {
+		t.Fatalf("expected rich_text fallback, got %#v", val)
+	}
+	text, _ := rt[0]["text"].(map[string]interface{})
+	if text["content"] != "weird:foo" {
+		t.Errorf("rich_text content = %v, want 'weird:foo' verbatim", text["content"])
+	}
+}
+
+// propertyEqual is a recursive comparator that handles the loose
+// map[string]interface{} shapes parseProperty emits. reflect.DeepEqual
+// would work, but it treats []map vs []interface{} as unequal; the
+// helper normalises both sides before comparing.
+func propertyEqual(a, b map[string]interface{}) bool {
+	aj, errA := json.Marshal(a)
+	bj, errB := json.Marshal(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return string(aj) == string(bj)
+}
+
 // pagesDispatchServer swaps the cmd-layer mock with a pages-aware handler.
 // It returns a counter map keyed by method+path, the most recent request
 // body for each (method+path), and a close func. Body capture lets tests
