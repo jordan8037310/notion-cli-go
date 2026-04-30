@@ -133,18 +133,43 @@ func (b *BlockClient) GetBlockID(ctx context.Context, pageID string, order int) 
 	return blockList.Results[order-1].ID, nil
 }
 
-// MarkToDoBlockChecked flips the to-do at the given index to checked=true.
+// MarkToDoBlockChecked flips the to-do at the given 1-based to-do
+// ordinal to checked=true. The ordinal is into the to-do-only subset
+// (matching `notioncli list`), not the absolute block list — see #55.
 func (b *BlockClient) MarkToDoBlockChecked(ctx context.Context, pageID string, order int) error {
 	return b.setToDoChecked(ctx, pageID, order, true)
 }
 
-// MarkToDoBlockUnChecked flips the to-do at the given index to checked=false.
+// MarkToDoBlockUnChecked flips the to-do at the given 1-based to-do
+// ordinal to checked=false. Same numbering as MarkToDoBlockChecked.
 func (b *BlockClient) MarkToDoBlockUnChecked(ctx context.Context, pageID string, order int) error {
 	return b.setToDoChecked(ctx, pageID, order, false)
 }
 
+// resolveToDoBlockID translates a 1-based to-do ordinal (the same
+// numbering `notioncli list` prints) into the underlying Notion block
+// id by fetching only the page's to-do blocks. Centralising this here
+// keeps check/uncheck/delete in lockstep — every to-do command must
+// see the same numbering as `list`. Closes #55.
+func (b *BlockClient) resolveToDoBlockID(ctx context.Context, pageID string, order int) (string, error) {
+	if order < 1 {
+		return "", fmt.Errorf("order must be greater than 0")
+	}
+	todos, err := b.GetAllBlocks(ctx, pageID, "to_do")
+	if err != nil {
+		return "", err
+	}
+	if len(todos) == 0 {
+		return "", fmt.Errorf("no to-do blocks on this page")
+	}
+	if order > len(todos) {
+		return "", fmt.Errorf("no to-do block at position %d (page has %d to-do block(s))", order, len(todos))
+	}
+	return todos[order-1].ID, nil
+}
+
 func (b *BlockClient) setToDoChecked(ctx context.Context, pageID string, order int, checked bool) error {
-	blockID, err := b.GetBlockID(ctx, pageID, order)
+	blockID, err := b.resolveToDoBlockID(ctx, pageID, order)
 	if err != nil {
 		return err
 	}
@@ -164,9 +189,11 @@ func (b *BlockClient) setToDoChecked(ctx context.Context, pageID string, order i
 	return expectStatus(resp, http.StatusOK)
 }
 
-// DeleteToDoBlock removes the to-do at the given 1-based index.
+// DeleteToDoBlock removes the to-do at the given 1-based to-do ordinal.
+// Indexing matches `notioncli list` — see #55. Use BlockClient.DeleteBlock
+// for absolute-index deletes (the path `notioncli blocks delete` takes).
 func (b *BlockClient) DeleteToDoBlock(ctx context.Context, pageID string, order int) error {
-	blockID, err := b.GetBlockID(ctx, pageID, order)
+	blockID, err := b.resolveToDoBlockID(ctx, pageID, order)
 	if err != nil {
 		return err
 	}
