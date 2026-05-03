@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -51,10 +52,22 @@ func (b *BlockClient) GetBlocks(ctx context.Context, pageID string) ([]Block, er
 	return blocks, nil
 }
 
-// GetToDoBlocks returns formatted to-do strings (index, check state, text,
-// last-edited time) for the given page, in the supplied timezone.
+// GetToDoBlocks returns formatted to-do strings (index, check state,
+// text, last-edited time) for the given page, in the supplied timezone.
+//
+// Routes through GetVisibleToDoBlocks so the human `list` view uses
+// the same paginated, empty-filtered slice the resolver
+// (check/uncheck/delete) indexes into. Pre-fix this read only the
+// first /blocks/{id}/children page via GetBlocks, so on long pages
+// `list` stopped at 100 items while the mutating commands still
+// resolved into later tasks — a numbering drift on top of the one
+// PR #56 already fixed.
+//
+// The label concatenates every rich_text run instead of just
+// RichText[0].PlainText, so to-dos containing mentions, links, or
+// multiple text segments render in full.
 func (b *BlockClient) GetToDoBlocks(ctx context.Context, pageID string, localTimezone *time.Location) ([]string, error) {
-	blocks, err := b.GetBlocks(ctx, pageID)
+	blocks, err := b.GetVisibleToDoBlocks(ctx, pageID)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +85,11 @@ func (b *BlockClient) GetToDoBlocks(ctx context.Context, pageID string, localTim
 			return nil, err
 		}
 		truncatedTime := lastEditedTime.In(localTimezone).Truncate(time.Minute)
-		element := fmt.Sprintf("%d [%s] %s (%s)", len(todoBlocks)+1, checked, block.ToDo.RichText[0].PlainText, truncatedTime.Format("2006-01-02 15:04"))
+		var label strings.Builder
+		for _, run := range block.ToDo.RichText {
+			label.WriteString(run.PlainText)
+		}
+		element := fmt.Sprintf("%d [%s] %s (%s)", len(todoBlocks)+1, checked, label.String(), truncatedTime.Format("2006-01-02 15:04"))
 		todoBlocks = append(todoBlocks, element)
 	}
 	return todoBlocks, nil
