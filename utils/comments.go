@@ -72,6 +72,17 @@ func NewCommentClient(c *Client) *CommentClient {
 	return &CommentClient{c: c}
 }
 
+// checkAuth mirrors the guard pattern used by every other typed client
+// (PageClient/UserClient/TeamClient/etc.). Maps a nil receiver, nil
+// underlying *Client, or empty API key to ErrMissingAPIKey instead of a
+// runtime panic or an opaque server-side 401. See issue #54.
+func (cc *CommentClient) checkAuth() error {
+	if cc == nil || cc.c == nil || cc.c.apiKey == "" {
+		return ErrMissingAPIKey
+	}
+	return nil
+}
+
 // ListPage fetches a single page of comments for the given block or page id.
 // Pass an empty cursor to start from the first page; subsequent calls should
 // use the NextCursor value from the previous response.
@@ -79,6 +90,9 @@ func NewCommentClient(c *Client) *CommentClient {
 // Callers who want every comment in one call should use List, which handles
 // pagination internally.
 func (cc *CommentClient) ListPage(ctx context.Context, blockID, cursor string) (*CommentList, error) {
+	if err := cc.checkAuth(); err != nil {
+		return nil, fmt.Errorf("comments list: %w", err)
+	}
 	if blockID == "" {
 		return nil, fmt.Errorf("comments list: block id is required")
 	}
@@ -139,6 +153,9 @@ func (cc *CommentClient) List(ctx context.Context, blockID string) ([]Comment, e
 // Requests with neither or both are rejected client-side before the API
 // call so the failure mode is predictable and testable without network.
 func (cc *CommentClient) Create(ctx context.Context, req CreateCommentRequest) (*Comment, error) {
+	if err := cc.checkAuth(); err != nil {
+		return nil, fmt.Errorf("comments create: %w", err)
+	}
 	if err := validateCreateCommentRequest(req); err != nil {
 		return nil, err
 	}

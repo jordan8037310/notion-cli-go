@@ -330,6 +330,16 @@ func (p *PageClient) Duplicate(ctx context.Context, srcID, parentID string) (*Pa
 	}
 
 	children := blocksToChildren(blocks)
+	// Filter pass: blocksToChildren can return an empty slice when every
+	// source block is a type rebuildBlock drops (image/file/child_database
+	// today). Without this guard the next step PATCHes /blocks/{id}/children
+	// with `children: []`, which Notion rejects — the destination page is
+	// already created at that point, leaving an empty orphan. Closes the
+	// edge case from #54. Treat empty-after-filter the same as zero source
+	// blocks: hand back the new page with just the title.
+	if len(children) == 0 {
+		return newPage, nil
+	}
 	body := map[string]interface{}{"children": children}
 	req, err := p.c.newRequest(ctx, http.MethodPatch, "/blocks/"+newPage.ID+"/children", body)
 	if err != nil {

@@ -130,10 +130,26 @@ type SearchResponse struct {
 	HasMore    bool           `json:"has_more"`
 }
 
+// checkAuth mirrors the guard pattern used by every other typed client
+// (PageClient/UserClient/TeamClient/etc.). It maps a nil receiver, nil
+// underlying *Client, or empty API key to ErrMissingAPIKey instead of a
+// runtime panic or an opaque server-side 401. Library callers that wire
+// SearchClient through a test seam (NewSearchClient(nil)) get a typed
+// error rather than a deref panic. See issue #54.
+func (s *SearchClient) checkAuth() error {
+	if s == nil || s.c == nil || s.c.apiKey == "" {
+		return ErrMissingAPIKey
+	}
+	return nil
+}
+
 // Search performs a single POST /v1/search call and returns the immediate
 // page of results. Callers that need to walk every page should use
 // SearchAll, which handles cursor pagination.
 func (s *SearchClient) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
+	if err := s.checkAuth(); err != nil {
+		return nil, fmt.Errorf("search: %w", err)
+	}
 	httpReq, err := s.c.newRequest(ctx, http.MethodPost, "/search", req)
 	if err != nil {
 		return nil, err
