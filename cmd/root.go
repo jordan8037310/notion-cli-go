@@ -7,6 +7,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"notioncli/utils"
 
@@ -87,10 +89,23 @@ func Execute() {
 func shouldSuppressBanner() bool {
 	args := os.Args[1:]
 	for i, a := range args {
-		switch a {
-		case "--json", "--output=json":
+		switch {
+		case a == "--json", a == "--output=json":
 			return true
-		case "--output":
+		case strings.HasPrefix(a, "--json="):
+			// Cobra accepts the explicit boolean form for bool flags
+			// (--json=true / --json=1 / --json=false). Without this
+			// branch, --json=true would slip past the matcher and the
+			// banner would print before the JSON payload, breaking
+			// every machine consumer (#67). Mirror cobra's truthiness
+			// rules via strconv.ParseBool so the matcher accepts the
+			// same set of values cobra will: 1, t, T, TRUE, true, True
+			// (and the corresponding false set, which we want to
+			// reject so explicit-off keeps the banner).
+			if v, err := strconv.ParseBool(strings.TrimPrefix(a, "--json=")); err == nil && v {
+				return true
+			}
+		case a == "--output":
 			if i+1 < len(args) && args[i+1] == "json" {
 				return true
 			}
