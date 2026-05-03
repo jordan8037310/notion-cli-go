@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -218,7 +219,14 @@ func (b *BlockClient) GetAllBlocks(ctx context.Context, pageID, filterType strin
 	for {
 		path := "/blocks/" + pageID + "/children"
 		if cursor != "" {
-			path += "?start_cursor=" + cursor
+			// Notion cursors are opaque tokens that commonly contain
+			// reserved URL characters (`+`, `/`, `=`). Without escaping
+			// here, the second request goes out with a different
+			// `start_cursor` value than Notion issued and pagination
+			// silently breaks on long pages — see issue #57. Mirrors
+			// the pattern UserClient.ListPage / TeamClient.ListPage
+			// already use.
+			path += "?start_cursor=" + url.QueryEscape(cursor)
 		}
 		req, err := b.c.newRequest(ctx, http.MethodGet, path, nil)
 		if err != nil {
