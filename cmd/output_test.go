@@ -655,22 +655,34 @@ func TestUsers_Whoami_JSON(t *testing.T) {
 	}
 }
 
-// TestTeams_List_JSON asserts `teams list --json` emits NDJSON.
-func TestTeams_List_JSON(t *testing.T) {
+// TestTeams_List_JSON_StubError asserts `teams list --json` emits a
+// JSON error envelope while the underlying API is stubbed (#37). The
+// stderr stream should be a single valid JSON line whose error field
+// mentions the unavailable API. When Notion restores /v1/teams, flip
+// this back to NDJSON-of-team-objects.
+func TestTeams_List_JSON_StubError(t *testing.T) {
 	_ = withCmdEnv(t)
 	resetGlobalOutputFlags()
 	resetRootCmdArgs()
-	var out bytes.Buffer
-	rootCmd.SetOut(&out)
-	rootCmd.SetErr(&out)
+
+	// Need stderr captured separately — the JSON error envelope goes
+	// to ErrOrStderr, not OutOrStdout (which would be the success
+	// stream).
+	var stderr bytes.Buffer
+	rootCmd.SetOut(io.Discard)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SilenceErrors = true
+	rootCmd.SilenceUsage = true
 	rootCmd.SetArgs([]string{"teams", "list", "--json"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("teams list --json should return an error while stubbed")
 	}
-	assertNoANSI(t, out.String())
-	objs := assertNDJSON(t, out.String())
-	if len(objs) == 0 {
-		t.Fatalf("no team NDJSON: %q", out.String())
+	assertNoANSI(t, stderr.String())
+	if !strings.Contains(stderr.String(), `"error"`) {
+		t.Errorf("expected JSON error envelope on stderr, got: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "teams API unavailable") {
+		t.Errorf("expected stderr to mention API status, got: %q", stderr.String())
 	}
 }
 

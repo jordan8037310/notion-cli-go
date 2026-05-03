@@ -46,35 +46,29 @@ func TestTeamsListExists(t *testing.T) {
 	}
 }
 
-// TestTeamsListDispatch_HappyPath runs `notioncli teams list` against a
-// mock server and asserts the output lists each team (id + name) in the
-// expected order. No osExit call on the happy path.
-func TestTeamsListDispatch_HappyPath(t *testing.T) {
+// TestTeamsListDispatch_StubReturnsTypedError pins the post-#37
+// contract: `notioncli teams list` returns a clear error pointing at
+// the upstream API status (Notion-Version 2026-03-11 has no working
+// /v1/teams endpoint) rather than letting the live API 400 surface
+// raw. Once Notion exposes a teams endpoint we restore the network
+// path and this test should flip back to asserting the happy-path
+// rendering.
+func TestTeamsListDispatch_StubReturnsTypedError(t *testing.T) {
 	_ = withCmdEnv(t)
-
-	// Ensure osExit doesn't fire on the happy path — swap a recorder.
-	var exited bool
-	origExit := osExit
-	osExit = func(c int) { exited = true }
-	t.Cleanup(func() { osExit = origExit })
 
 	var buf bytes.Buffer
 	resetRootCmdArgs()
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
 	rootCmd.SetArgs([]string{"teams", "list"})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("rootCmd.Execute(teams list): %v", err)
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("teams list should return an error while the API is stubbed; got nil")
 	}
-	if exited {
-		t.Errorf("happy path invoked osExit unexpectedly")
-	}
-
-	out := buf.String()
-	for _, frag := range []string{"team-1", "Marketing"} {
-		if !strings.Contains(out, frag) {
-			t.Errorf("teams list output missing %q:\n%s", frag, out)
-		}
+	if !strings.Contains(err.Error(), "teams API unavailable") {
+		t.Errorf("teams list error %q should mention 'teams API unavailable' so users see the cause clearly", err.Error())
 	}
 }
 

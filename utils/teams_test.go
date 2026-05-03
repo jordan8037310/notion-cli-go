@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -68,60 +67,45 @@ func TestNewTeamClient(t *testing.T) {
 	}
 }
 
-// TestTeams_ListPage_SinglePage covers the happy-path single-page
-// response (HasMore=false, cursor empty).
-func TestTeams_ListPage_SinglePage(t *testing.T) {
-	srv := newTeamsMock(t)
-	defer srv.Close()
-
-	got, err := newTeamClient(srv).ListPage(context.Background(), "cursor-1")
-	if err != nil {
-		t.Fatalf("ListPage: %v", err)
-	}
-	if len(got.Results) != 1 || got.Results[0].ID != "team-3" {
-		t.Errorf("ListPage: unexpected results %+v", got.Results)
-	}
-	if got.HasMore {
-		t.Errorf("ListPage: HasMore = true, want false on final page")
-	}
-}
-
-// TestTeams_ListPage_FirstPage verifies an empty cursor returns the
-// first page and signals HasMore=true with a follow-up cursor.
-func TestTeams_ListPage_FirstPage(t *testing.T) {
+// TestTeams_ListPage_StubReturnsErrTeamsNotSupported pins the post-#37
+// contract: every network-issuing TeamClient method short-circuits with
+// ErrTeamsNotSupported instead of letting the live API 400 with
+// invalid_request_url. The mock server stays in place so a future
+// restoration (when Notion re-exposes /v1/teams or its successor) only
+// needs to flip the return statement back to the network path; the
+// pagination/cursor scaffolding here is the documentation for that
+// future state.
+func TestTeams_ListPage_StubReturnsErrTeamsNotSupported(t *testing.T) {
 	srv := newTeamsMock(t)
 	defer srv.Close()
 
 	got, err := newTeamClient(srv).ListPage(context.Background(), "")
-	if err != nil {
-		t.Fatalf("ListPage: %v", err)
+	if err == nil {
+		t.Fatalf("ListPage: expected ErrTeamsNotSupported, got %+v", got)
 	}
-	if !got.HasMore || got.NextCursor != "cursor-1" {
-		t.Errorf("ListPage: want HasMore=true NextCursor=cursor-1, got %+v", got)
+	if !errors.Is(err, ErrTeamsNotSupported) {
+		t.Errorf("ListPage: err = %v; want errors.Is ErrTeamsNotSupported", err)
 	}
-	if len(got.Results) != 2 {
-		t.Errorf("ListPage: want 2 results, got %+v", got.Results)
+	if got != nil {
+		t.Errorf("ListPage: want nil page on stub, got %+v", got)
 	}
 }
 
-// TestTeams_List_FollowsPagination walks pagination end-to-end and
-// verifies every result is collected in order.
-func TestTeams_List_FollowsPagination(t *testing.T) {
+// TestTeams_List_StubReturnsErrTeamsNotSupported is the same contract
+// applied to the paginated List method.
+func TestTeams_List_StubReturnsErrTeamsNotSupported(t *testing.T) {
 	srv := newTeamsMock(t)
 	defer srv.Close()
 
 	got, err := newTeamClient(srv).List(context.Background())
-	if err != nil {
-		t.Fatalf("List: %v", err)
+	if err == nil {
+		t.Fatalf("List: expected ErrTeamsNotSupported, got %+v", got)
 	}
-	if len(got) != 3 {
-		t.Fatalf("List: want 3 teams across pages, got %d: %+v", len(got), got)
+	if !errors.Is(err, ErrTeamsNotSupported) {
+		t.Errorf("List: err = %v; want errors.Is ErrTeamsNotSupported", err)
 	}
-	want := []string{"team-1", "team-2", "team-3"}
-	for i, id := range want {
-		if got[i].ID != id {
-			t.Errorf("List[%d].ID = %q, want %q", i, got[i].ID, id)
-		}
+	if got != nil {
+		t.Errorf("List: want nil teams on stub, got %+v", got)
 	}
 }
 
@@ -157,38 +141,25 @@ func TestTeams_ListPage_MissingAPIKey(t *testing.T) {
 	}
 }
 
-// TestTeams_ListPage_APIError verifies a non-2xx response is surfaced as
-// a wrapped error (no panic, no nil deref).
-func TestTeams_ListPage_APIError(t *testing.T) {
+// TestTeams_ListPage_StubBeforeNetwork confirms the stub short-circuits
+// before any HTTP call — the mock server registers zero hits regardless
+// of the cursor value. Restoration of the network path (when Notion
+// exposes a working endpoint) should flip this assertion: the mock
+// should see exactly one hit per ListPage with the cursor URL-escaped.
+func TestTeams_ListPage_StubBeforeNetwork(t *testing.T) {
+	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"object":"error","code":"unauthorized"}`, http.StatusUnauthorized)
-	}))
-	defer srv.Close()
-
-	_, err := newTeamClient(srv).ListPage(context.Background(), "")
-	if err == nil {
-		t.Fatal("ListPage: want error on 401, got nil")
-	}
-	if !strings.Contains(err.Error(), "401") {
-		t.Errorf("ListPage error = %q; want to mention 401", err.Error())
-	}
-}
-
-// TestTeams_ListPage_EscapesCursor asserts cursor values with special
-// characters are URL-escaped so the wire path stays well-formed.
-func TestTeams_ListPage_EscapesCursor(t *testing.T) {
-	var gotRaw string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotRaw = r.URL.RawQuery
+		hits++
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(TeamList{Object: "list"})
 	}))
 	defer srv.Close()
 
-	if _, err := newTeamClient(srv).ListPage(context.Background(), "abc def+gh"); err != nil {
-		t.Fatalf("ListPage: %v", err)
+	_, err := newTeamClient(srv).ListPage(context.Background(), "abc def+gh")
+	if !errors.Is(err, ErrTeamsNotSupported) {
+		t.Errorf("ListPage: err = %v; want errors.Is ErrTeamsNotSupported", err)
 	}
-	if !strings.Contains(gotRaw, "start_cursor=abc+def%2Bgh") && !strings.Contains(gotRaw, "start_cursor=abc%20def%2Bgh") {
-		t.Errorf("ListPage: raw query = %q; want escaped cursor", gotRaw)
+	if hits != 0 {
+		t.Errorf("ListPage made %d HTTP call(s); stub must short-circuit before the network", hits)
 	}
 }
