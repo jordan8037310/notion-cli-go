@@ -271,23 +271,53 @@ func TestUpdate_TitleOnly(t *testing.T) {
 	}
 
 	calls := m.callsSnapshot()
-	if len(calls) != 1 {
-		t.Fatalf("len(calls)=%d want 1", len(calls))
+	// Two calls now: a GET /pages/{id} to probe the title-property
+	// key (#60), then the PATCH itself. The GET is bounded to updates
+	// that actually use --title; updates without it still issue one
+	// call (covered by TestUpdate_PropertiesOnly_NoProbe).
+	if len(calls) != 2 {
+		t.Fatalf("len(calls)=%d want 2 (GET probe + PATCH)", len(calls))
 	}
-	if calls[0].method != http.MethodPatch || calls[0].path != "/pages/pageID" {
-		t.Errorf("call=%s %s want PATCH /pages/pageID", calls[0].method, calls[0].path)
+	if calls[0].method != http.MethodGet || calls[0].path != "/pages/pageID" {
+		t.Errorf("call[0]=%s %s want GET /pages/pageID (title-key probe)", calls[0].method, calls[0].path)
 	}
-	if _, ok := calls[0].body["properties"]; !ok {
+	if calls[1].method != http.MethodPatch || calls[1].path != "/pages/pageID" {
+		t.Errorf("call[1]=%s %s want PATCH /pages/pageID", calls[1].method, calls[1].path)
+	}
+	if _, ok := calls[1].body["properties"]; !ok {
 		t.Error("expected title-only update to include properties")
 	}
 	// Guard against regressing the 2026-03-11 wire format on either
 	// the old key (archived) or the new one (in_trash) — neither
 	// should be present when no trash flag was supplied.
-	if _, ok := calls[0].body["archived"]; ok {
+	if _, ok := calls[1].body["archived"]; ok {
 		t.Error("title-only update must not include archived (removed in 2026-03-11)")
 	}
-	if _, ok := calls[0].body["in_trash"]; ok {
+	if _, ok := calls[1].body["in_trash"]; ok {
 		t.Error("title-only update should not include in_trash")
+	}
+}
+
+// TestUpdate_PropertiesOnly_NoProbe pins the contract that updates
+// without --title do NOT issue the title-key probe — only updates that
+// need to know what the title column is named pay the GET round-trip.
+func TestUpdate_PropertiesOnly_NoProbe(t *testing.T) {
+	m := newPagesMockServer(t)
+	pc := NewPageClient(m.client())
+
+	props := map[string]interface{}{
+		"Status": map[string]interface{}{"status": map[string]interface{}{"name": "Done"}},
+	}
+	if _, err := pc.Update(context.Background(), "pageID", UpdatePageRequest{Properties: props}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	calls := m.callsSnapshot()
+	if len(calls) != 1 {
+		t.Fatalf("len(calls)=%d want 1 (no --title means no probe)", len(calls))
+	}
+	if calls[0].method != http.MethodPatch {
+		t.Errorf("call[0]=%s want PATCH", calls[0].method)
 	}
 }
 

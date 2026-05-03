@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // ErrMissingAPIKey is returned by PageClient methods when the underlying
@@ -40,14 +41,22 @@ func (p *PageClient) checkAuth() error {
 	return nil
 }
 
-// PageParent describes where a page lives. Notion accepts exactly one of
-// database_id, page_id, or workspace=true. The zero value is invalid; callers
-// constructing a CreatePageRequest must populate one of the three identifiers.
+// PageParent describes where a page lives. Notion-Version 2026-03-11
+// accepts exactly one of database_id, data_source_id, page_id, or
+// workspace=true. The zero value is invalid; callers constructing a
+// CreatePageRequest must populate one of the four identifiers.
+//
+// On 2026-03-11 most queryable surfaces are data_sources rather than
+// databases — the Create path auto-resolves which discriminator to use
+// when only DatabaseID is set, by probing the schema once. Callers who
+// already know the surface type can set DataSourceID directly to skip
+// the probe.
 type PageParent struct {
-	Type       string `json:"type,omitempty"`
-	DatabaseID string `json:"database_id,omitempty"`
-	PageID     string `json:"page_id,omitempty"`
-	Workspace  bool   `json:"workspace,omitempty"`
+	Type         string `json:"type,omitempty"`
+	DatabaseID   string `json:"database_id,omitempty"`
+	DataSourceID string `json:"data_source_id,omitempty"`
+	PageID       string `json:"page_id,omitempty"`
+	Workspace    bool   `json:"workspace,omitempty"`
 }
 
 // Page is the envelope returned by /v1/pages endpoints. Properties is left as
@@ -96,7 +105,14 @@ type UpdatePageRequest struct {
 }
 
 // titleProperty returns the minimal Notion title property payload for the
-// given plain-text title.
+// given plain-text title — the inner `{"title": [{...}]}` shape that goes
+// under whatever property key a database has named its title column.
+//
+// For page parents the column is always literally "title". For database
+// rows the column is whatever the schema named it (commonly "Name", but
+// users routinely rename to "Project", "Client Name", etc.). Callers
+// determine the right key via probeDatabaseTitlePropertyKey before
+// folding this payload into the request body. See issue #60.
 func titleProperty(title string) map[string]interface{} {
 	return map[string]interface{}{
 		"title": []map[string]interface{}{
@@ -106,6 +122,76 @@ func titleProperty(title string) map[string]interface{} {
 			},
 		},
 	}
+}
+
+// findPageTitleText walks a page's loose Properties map looking for the
+// entry whose Notion type is "title" (the property is unique per page —
+// there is exactly one). Returns the concatenated plain_text of every
+// rich-text run, so titles split across multiple runs (mentions, mixed
+// formatting, links) round-trip in full. Returns ("", false) when no
+// title property is present or every run is empty.
+//
+// Closes #60 (read-path half) and #65 (multi-run truncation) — both
+// previously returned only the first non-empty run, dropping anything
+// after the first segment.
+//
+// The helper does NOT key off the property NAME (e.g. "title", "Name",
+// "Project"). It walks every entry and matches on the `type` field, so
+// renamed title columns work out of the box.
+func findPageTitleText(props map[string]interface{}) (string, bool) {
+	for _, v := range props {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// The schema property shape carries `"type": "title"` in both
+		// pages (where the value also has a `title: [...]` rich-text
+		// array) and database schemas (where `title: {}` is empty).
+		// On a page we want the array; on a schema we don't reach
+		// here. The presence of `[]interface{}` under `title` is the
+		// strict gate.
+		items, ok := m["title"].([]interface{})
+		if !ok {
+			continue
+		}
+		var sb strings.Builder
+		for _, item := range items {
+			run, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if pt, ok := run["plain_text"].(string); ok {
+				sb.WriteString(pt)
+			}
+		}
+		out := sb.String()
+		return out, out != ""
+	}
+	return "", false
+}
+
+// findSchemaTitlePropertyKey scans a database (or data_source) schema
+// for the property whose `type` is "title" and returns the property's
+// key. Notion guarantees exactly one title property per schema; the
+// key may be anything the user named the column ("Name", "Project",
+// "Client Name", etc.).
+//
+// Used by Create/Update when the parent is a database to determine
+// what key the --title shortcut should serialise under. Returns ""
+// when no title property is found, leaving the caller to fall back to
+// the literal "title" key (preserves the legacy behaviour for callers
+// that pass a raw page id as parent).
+func findSchemaTitlePropertyKey(props map[string]interface{}) string {
+	for key, v := range props {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if t, _ := m["type"].(string); t == "title" {
+			return key
+		}
+	}
+	return ""
 }
 
 // Get retrieves a page by ID via GET /v1/pages/{id}.
@@ -131,25 +217,63 @@ func (p *PageClient) Get(ctx context.Context, id string) (*Page, error) {
 	return &page, nil
 }
 
-// Create posts a new page to POST /v1/pages. The parent must be set. If
-// req.Title is non-empty it is merged into Properties under the "title" key,
-// overwriting any title the caller already supplied there.
+// Create posts a new page to POST /v1/pages. The parent must be set.
+//
+// When the parent is a database/data_source ID and req.Title is set,
+// Create probes the schema once via DatabaseClient.Get to learn two
+// things: (a) the actual surface type (database vs data_source on
+// Notion-Version 2026-03-11) so we can pick the right parent
+// discriminator, and (b) the title-property key (renamed columns like
+// "Name" or "Client Name" are common). Both come from the same GET so
+// the probe cost is bounded to one round-trip per database-parented
+// create that uses --title.
+//
+// If the caller already supplied a title-typed property in
+// req.Properties we honour that and skip the probe. Callers who set
+// Parent.DataSourceID directly also skip the probe (already know the
+// surface type).
+//
+// See issues #48 (data_source endpoint dispatch) and #60 (title
+// property naming) for the underlying bugs.
 func (p *PageClient) Create(ctx context.Context, req CreatePageRequest) (*Page, error) {
 	if err := p.checkAuth(); err != nil {
 		return nil, fmt.Errorf("create page: %w", err)
 	}
-	if req.Parent.DatabaseID == "" && req.Parent.PageID == "" && !req.Parent.Workspace {
+	if req.Parent.DatabaseID == "" && req.Parent.DataSourceID == "" && req.Parent.PageID == "" && !req.Parent.Workspace {
 		return nil, fmt.Errorf("create page: parent is required")
 	}
-	body := map[string]interface{}{
-		"parent": req.Parent,
+
+	parent := req.Parent
+	titleKey := "title"
+	wantTitle := req.Title != "" && !propertiesContainTitle(req.Properties)
+
+	// Probe only when the caller passed DatabaseID and we need either
+	// the title key or surface-type discrimination. Skip when caller
+	// pre-resolved by setting DataSourceID, page parents, or no title.
+	if req.Parent.DatabaseID != "" && req.Parent.DataSourceID == "" && (wantTitle || true) {
+		// We always probe on database parents — even without --title,
+		// 2026-03-11 may need the discriminator swap for the request
+		// to land. Cost is one extra GET per database-parented create.
+		if probed, err := NewDatabaseClient(p.c).Get(ctx, req.Parent.DatabaseID); err == nil && probed != nil {
+			if probed.Object == "data_source" {
+				parent = PageParent{DataSourceID: req.Parent.DatabaseID}
+			}
+			if k := findSchemaTitlePropertyKey(probed.Properties); k != "" {
+				titleKey = k
+			}
+		}
+		// Probe failure (auth, transport, or no schema match) leaves
+		// parent and titleKey at their defaults — worst case is the
+		// pre-#60 behaviour, an opaque 400 from Notion.
 	}
+
+	body := map[string]interface{}{"parent": parent}
 	props := map[string]interface{}{}
 	for k, v := range req.Properties {
 		props[k] = v
 	}
-	if req.Title != "" {
-		props["title"] = titleProperty(req.Title)
+	if wantTitle {
+		props[titleKey] = titleProperty(req.Title)
 	}
 	if len(props) > 0 {
 		body["properties"] = props
@@ -172,8 +296,68 @@ func (p *PageClient) Create(ctx context.Context, req CreatePageRequest) (*Page, 
 	return &page, nil
 }
 
-// Update patches a page via PATCH /v1/pages/{id}. All fields on the request
-// are optional. Title, when non-empty, becomes a title property.
+// resolveTitleKeyForExistingPage returns the key of the title-typed
+// property on an existing page, by GET-ing the page once and walking
+// its properties for the entry whose Notion type is "title". On any
+// failure (missing page, network error, no title property) it falls
+// back to literal "title" — the worst case is the pre-#60 behaviour.
+//
+// Used by Update when the caller passes --title without pre-resolving
+// the property key. The probe is bounded to one GET per Update call
+// that actually uses --title.
+func (p *PageClient) resolveTitleKeyForExistingPage(ctx context.Context, id string) string {
+	page, err := p.Get(ctx, id)
+	if err != nil || page == nil {
+		return "title"
+	}
+	for key, v := range page.Properties {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if t, _ := m["type"].(string); t == "title" {
+			return key
+		}
+	}
+	return "title"
+}
+
+// propertiesContainTitle reports whether the caller already injected a
+// title-typed property under any key. Used by Create/Update to skip
+// the probe + auto-key when the user pre-resolved the title via the
+// typed --property surface (PR #53).
+func propertiesContainTitle(props map[string]interface{}) bool {
+	for _, v := range props {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, hasArray := m["title"].([]map[string]interface{}); hasArray {
+			return true
+		}
+		if _, hasArray := m["title"].([]interface{}); hasArray {
+			return true
+		}
+	}
+	return false
+}
+
+// Update patches a page via PATCH /v1/pages/{id}. All fields on the
+// request are optional. Title, when non-empty, becomes a title property
+// under the page's actual title-property key — for page-parented pages
+// that's "title"; for database rows it's whatever the database schema
+// named the title column ("Name", "Project", "Client Name", etc.).
+//
+// Resolving the right key needs one GET /v1/pages/{id} (only when
+// --title is set; updates without --title still issue a single PATCH).
+// We read the existing properties and find the one whose type is
+// "title"; this avoids the heavier GET-page-then-GET-database probe
+// the original #60 design considered. The probe failure mode falls
+// back to literal "title" so the worst case is the pre-#60 behaviour.
+//
+// Caller-supplied req.Properties that already contain a title-typed
+// entry skip the probe — power users can pre-resolve via PR #53's
+// typed --property "Name=title:..." surface.
 func (p *PageClient) Update(ctx context.Context, id string, req UpdatePageRequest) (*Page, error) {
 	if err := p.checkAuth(); err != nil {
 		return nil, fmt.Errorf("update page: %w", err)
@@ -186,8 +370,9 @@ func (p *PageClient) Update(ctx context.Context, id string, req UpdatePageReques
 	for k, v := range req.Properties {
 		props[k] = v
 	}
-	if req.Title != "" {
-		props["title"] = titleProperty(req.Title)
+	if req.Title != "" && !propertiesContainTitle(props) {
+		key := p.resolveTitleKeyForExistingPage(ctx, id)
+		props[key] = titleProperty(req.Title)
 	}
 	if len(props) > 0 {
 		body["properties"] = props
@@ -355,32 +540,16 @@ func (p *PageClient) Duplicate(ctx context.Context, srcID, parentID string) (*Pa
 	return newPage, nil
 }
 
-// extractTitle returns the plain-text title of a page when it can be found in
-// the loose property map. Returns "" if no title property is present.
+// extractTitle returns the plain-text title of a page when it can be
+// found in the loose property map. Returns "" if no title property is
+// present. Concatenates every rich-text run so titles split across
+// multiple runs (mentions, mixed formatting) round-trip in full.
 func extractTitle(page *Page) string {
 	if page == nil {
 		return ""
 	}
-	for _, v := range page.Properties {
-		m, ok := v.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		items, ok := m["title"].([]interface{})
-		if !ok {
-			continue
-		}
-		for _, item := range items {
-			run, ok := item.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if pt, ok := run["plain_text"].(string); ok && pt != "" {
-				return pt
-			}
-		}
-	}
-	return ""
+	out, _ := findPageTitleText(page.Properties)
+	return out
 }
 
 // blocksToChildren rebuilds the minimal "children" payload for PATCH
