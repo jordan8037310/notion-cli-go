@@ -294,7 +294,11 @@ func TestDatabasesQueryDispatch(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if got := d.count("POST /databases/dbID/query"); got != 2 {
+	// PR #48 routes Query through /data_sources/{id}/query first
+	// (Notion-Version 2026-03-11 default). The mock responds 200 to
+	// either /data_sources or /databases query suffixes, so the count
+	// lives on the new primary path.
+	if got := d.count("POST /data_sources/dbID/query"); got != 2 {
 		t.Errorf("POST query count=%d want 2 (calls=%v)", got, d.calls)
 	}
 }
@@ -310,7 +314,7 @@ func TestDatabasesQueryWithLimit(t *testing.T) {
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if got := d.count("POST /databases/dbID/query"); got != 1 {
+	if got := d.count("POST /data_sources/dbID/query"); got != 1 {
 		t.Errorf("POST query count=%d want 1 when --limit 1 (calls=%v)", got, d.calls)
 	}
 }
@@ -335,7 +339,9 @@ func TestDatabasesQueryMalformedFilter(t *testing.T) {
 	if err := rootCmd.Execute(); err == nil {
 		t.Fatal("expected error on malformed --filter-json, got nil")
 	}
-	if got := d.count("POST /databases/dbID/query"); got != 0 {
+	// Neither probe path should have been reached when validation
+	// fails before the request leaves the client.
+	if got := d.count("POST /data_sources/dbID/query") + d.count("POST /databases/dbID/query"); got != 0 {
 		t.Errorf("expected no POST when filter malformed, got %d", got)
 	}
 }
