@@ -640,17 +640,26 @@ func richTextChild(typ string, extra map[string]interface{}, runs []RichText) ma
 	}
 }
 
+// richTextPayload rebuilds the rich_text array for a child block during
+// duplicate. Routes through richTextToAPI so annotations (bold/italic/
+// color/...), inline links, page/user/date mentions, and inline
+// equations all round-trip — closes #61. Pre-fix this helper flattened
+// every run to a plain `{type:"text", text:{content:...}}` payload,
+// silently dropping every non-content field.
+//
+// We normalise Text.Content from PlainText first because the source
+// page's rich_text may have only PlainText populated (Notion's read
+// response sets both, but some constructors and the resolver-rendered
+// output don't). richTextToAPI itself reads Text.Content; without
+// this nudge, mentions and equations still preserve correctly but a
+// plain-text run could land on the wire with an empty content string.
 func richTextPayload(runs []RichText) []map[string]interface{} {
-	out := make([]map[string]interface{}, 0, len(runs))
-	for _, r := range runs {
-		content := r.Text.Content
-		if content == "" {
-			content = r.PlainText
+	normalized := make([]RichText, len(runs))
+	for i, r := range runs {
+		normalized[i] = r
+		if r.Mention == nil && r.Equation == nil && r.Text.Content == "" {
+			normalized[i].Text.Content = r.PlainText
 		}
-		out = append(out, map[string]interface{}{
-			"type": "text",
-			"text": map[string]interface{}{"content": content},
-		})
 	}
-	return out
+	return richTextToAPI(normalized)
 }

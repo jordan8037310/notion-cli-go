@@ -628,6 +628,62 @@ func TestRichTextPayload(t *testing.T) {
 	}
 }
 
+// TestRichTextPayload_PreservesAnnotations pins the #61 contract:
+// duplicate must round-trip annotations (bold/italic/color), inline
+// links, page mentions, and inline equations rather than flattening
+// every run to plain text. The pre-fix helper emitted only
+// {type:"text", text:{content:...}} for every input, silently dropping
+// every non-content field.
+func TestRichTextPayload_PreservesAnnotations(t *testing.T) {
+	runs := []RichText{
+		{
+			Type:        "text",
+			Text:        Text{Content: "bold "},
+			PlainText:   "bold ",
+			Annotations: Annotation{Bold: true},
+		},
+		{
+			Type:      "mention",
+			PlainText: "[page-mention]",
+			Mention:   &Mention{Type: "page", Page: &PageMention{ID: "abc-123"}},
+		},
+		{
+			Type:      "equation",
+			PlainText: "E=mc^2",
+			Equation:  &TextEquation{Expression: "E=mc^2"},
+		},
+	}
+	out := richTextPayload(runs)
+	if len(out) != 3 {
+		t.Fatalf("len=%d want 3", len(out))
+	}
+
+	// Run 0: bold annotation must survive.
+	ann0, ok := out[0]["annotations"].(Annotation)
+	if !ok {
+		t.Fatalf("run 0 lost annotations: %+v", out[0])
+	}
+	if !ann0.Bold {
+		t.Errorf("run 0 annotations.bold = false; want true (bold flag dropped)")
+	}
+
+	// Run 1: mention must round-trip as a mention, not flattened to text.
+	if out[1]["type"] != "mention" {
+		t.Errorf("run 1 type=%v want mention (mention flattened to text)", out[1]["type"])
+	}
+	if out[1]["mention"] == nil {
+		t.Errorf("run 1 lost mention payload: %+v", out[1])
+	}
+
+	// Run 2: equation must round-trip with the expression intact.
+	if out[2]["type"] != "equation" {
+		t.Errorf("run 2 type=%v want equation (equation flattened to text)", out[2]["type"])
+	}
+	if eq, _ := out[2]["equation"].(*TextEquation); eq == nil || eq.Expression != "E=mc^2" {
+		t.Errorf("run 2 equation lost: %+v", out[2])
+	}
+}
+
 // TestPageClient_MissingAPIKey asserts that every HTTP-calling method on
 // PageClient refuses to issue a request when the underlying Client has an
 // empty API key, and returns ErrMissingAPIKey (wrapped).
