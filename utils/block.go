@@ -185,10 +185,20 @@ type RichText struct {
 }
 
 // Annotation captures the Notion text-run annotation flags.
+//
+// Color carries the `,omitempty` tag because Notion-Version 2026-03-11
+// rejects `"color": ""` outright — the field must be one of the named
+// colors (default/gray/brown/...) or absent. The Go zero value is the
+// empty string, so without omitempty every payload that doesn't
+// explicitly set a color (including the comments-create path that
+// builds rich_text from a plain --text flag) 400s with
+// `body.rich_text[0].annotations.color should be "default", ... or undefined`.
+// The bool fields remain present-with-false because Notion accepts
+// false on each of them. See issue #49.
 type Annotation struct {
 	Bold          bool   `json:"bold"`
 	Code          bool   `json:"code"`
-	Color         string `json:"color"`
+	Color         string `json:"color,omitempty"`
 	Italic        bool   `json:"italic"`
 	Strikethrough bool   `json:"strikethrough"`
 	Underline     bool   `json:"underline"`
