@@ -295,6 +295,63 @@ func TestCommentClientCreate_TopLevelPageID(t *testing.T) {
 	}
 }
 
+// TestCommentClientCreate_OmitsEmptyAnnotationColor pins the wire shape
+// for #49: when callers build a rich_text run via NewCommentRichText (or
+// any other zero-Annotation path), the JSON body must NOT include a
+// `color` field. Notion-Version 2026-03-11 rejects `"color": ""` with
+// `body.rich_text[0].annotations.color should be "default", ... or undefined`.
+// The fix is `,omitempty` on Annotation.Color; this test guards against
+// a future revert that drops the tag.
+func TestCommentClientCreate_OmitsEmptyAnnotationColor(t *testing.T) {
+	m := newCommentsMock(t)
+	cc := newCommentClientForTest(m.srv.URL)
+
+	req := CreateCommentRequest{
+		Parent:   &CommentParent{PageID: "page-123"},
+		RichText: NewCommentRichText("hello"),
+	}
+	if _, err := cc.Create(context.Background(), req); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	body := string(m.lastCreateBody)
+	// The empty-string color is the exact byte sequence Notion 400s on.
+	// Match the substring rather than parsing JSON so the assertion is
+	// scoped to the wire form, not just the decoded shape.
+	if strings.Contains(body, `"color":""`) {
+		t.Errorf("comments create body must not include empty color field — Notion 2026-03-11 rejects it. body=%s", body)
+	}
+	// Sanity: the bool annotation flags are still expected (Notion
+	// accepts them as false). If they ever get omitempty too, this
+	// assertion would catch a wider behavior change.
+	if !strings.Contains(body, `"bold":false`) {
+		t.Errorf("comments create body should still include bold=false. body=%s", body)
+	}
+}
+
+// TestCommentClientCreate_PreservesNonDefaultColor confirms that callers
+// who DO set a color (e.g. mention runs that round-trip through
+// CommentClient) still get the field on the wire.
+func TestCommentClientCreate_PreservesNonDefaultColor(t *testing.T) {
+	m := newCommentsMock(t)
+	cc := newCommentClientForTest(m.srv.URL)
+
+	rt := NewCommentRichText("hello")
+	rt[0].Annotations.Color = "red"
+
+	req := CreateCommentRequest{
+		Parent:   &CommentParent{PageID: "page-123"},
+		RichText: rt,
+	}
+	if _, err := cc.Create(context.Background(), req); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	body := string(m.lastCreateBody)
+	if !strings.Contains(body, `"color":"red"`) {
+		t.Errorf("non-empty color should still serialise. body=%s", body)
+	}
+}
+
 func TestCommentClientCreate_TopLevelBlockID(t *testing.T) {
 	m := newCommentsMock(t)
 	cc := newCommentClientForTest(m.srv.URL)
