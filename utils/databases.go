@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // DatabaseClient is the typed resource client for the Notion databases API.
@@ -102,7 +103,12 @@ func titleRichText(title string) []map[string]interface{} {
 	}
 }
 
-// Get retrieves a database by ID via GET /v1/databases/{id}.
+// Get retrieves a database (or data_source) by ID. The id may point at
+// either object type — Get probes /v1/databases/{id} first and falls
+// back to /v1/data_sources/{id} on 404. On Notion-Version 2026-03-11
+// every entry returned by `notioncli search` is a data_source, so the
+// fallback is the common path in current workspaces. Mirrors the same
+// dispatch logic in Query — see issue #48.
 func (d *DatabaseClient) Get(ctx context.Context, id string) (*Database, error) {
 	if err := d.checkAuth(); err != nil {
 		return nil, fmt.Errorf("get database: %w", err)
@@ -110,7 +116,23 @@ func (d *DatabaseClient) Get(ctx context.Context, id string) (*Database, error) 
 	if id == "" {
 		return nil, fmt.Errorf("get database: id is required")
 	}
-	req, err := d.c.newRequest(ctx, http.MethodGet, "/databases/"+id, nil)
+
+	db, err := d.getOnce(ctx, "/databases/"+id)
+	if err == nil {
+		return db, nil
+	}
+	if !isQueryNotFound(err) {
+		return nil, err
+	}
+	return d.getOnce(ctx, "/data_sources/"+id)
+}
+
+// getOnce is the shared transport for both /databases/{id} and
+// /data_sources/{id}. The wire envelope is shape-compatible — both
+// return a Database-like object with title/properties/parent/etc. —
+// so callers can decode either into the existing Database type.
+func (d *DatabaseClient) getOnce(ctx context.Context, path string) (*Database, error) {
+	req, err := d.c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -125,14 +147,23 @@ func (d *DatabaseClient) Get(ctx context.Context, id string) (*Database, error) 
 	return &db, nil
 }
 
-// Query performs a single POST /v1/databases/{id}/query call and returns the
-// immediate page of results. filter and sort are passed through untouched as
-// the Notion API's filter and sorts keys — callers supply these as raw JSON
-// read from a file so the full Notion filter/sort surface is accessible
-// without this package modeling every option.
+// Query performs a single query against a Notion queryable surface and
+// returns the immediate page of results. filter and sort are passed
+// through untouched as the Notion API's filter and sorts keys — callers
+// supply these as raw JSON read from a file so the full Notion
+// filter/sort surface is accessible without this package modeling every
+// option.
 //
 // cursor is the start_cursor to resume from; pass "" for the first page.
 // pageSize is the Notion API's page_size (1-100, 0 means server default).
+//
+// The id may be either a database id or a data_source id. On
+// Notion-Version 2026-03-11 the queryable surface migrated from
+// /v1/databases/{id}/query to /v1/data_sources/{id}/query — every entry
+// returned by `notioncli search` in current workspaces is now a
+// data_source, not a database. Query probes data_sources first and
+// falls back to the legacy databases endpoint on 404 (and only on 404,
+// so genuine auth/transport errors surface immediately). See issue #48.
 func (d *DatabaseClient) Query(ctx context.Context, id string, filter, sort json.RawMessage, cursor string, pageSize int) (*QueryResponse, error) {
 	if err := d.checkAuth(); err != nil {
 		return nil, fmt.Errorf("query database: %w", err)
@@ -155,7 +186,23 @@ func (d *DatabaseClient) Query(ctx context.Context, id string, filter, sort json
 		body["page_size"] = pageSize
 	}
 
-	req, err := d.c.newRequest(ctx, http.MethodPost, "/databases/"+id+"/query", body)
+	// Probe data_sources first (2026-03-11 default).
+	out, err := d.postQuery(ctx, "/data_sources/"+id+"/query", body)
+	if err == nil {
+		return out, nil
+	}
+	if !isQueryNotFound(err) {
+		return nil, err
+	}
+	// Fall back to the legacy databases endpoint for unmigrated DBs.
+	return d.postQuery(ctx, "/databases/"+id+"/query", body)
+}
+
+// postQuery is the shared transport for both the data_sources and the
+// databases query endpoints — same envelope shape, same body, only the
+// path differs. Pulled out so Query's probe + fallback stays readable.
+func (d *DatabaseClient) postQuery(ctx context.Context, path string, body map[string]interface{}) (*QueryResponse, error) {
+	req, err := d.c.newRequest(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +215,17 @@ func (d *DatabaseClient) Query(ctx context.Context, id string, filter, sort json
 		return nil, fmt.Errorf("query database: %w", err)
 	}
 	return &out, nil
+}
+
+// isQueryNotFound reports whether err looks like a 404 from the Notion
+// API. utils.decodeInto wraps non-2xx as "unexpected status N: ...";
+// match the substring rather than a typed status code so the check
+// survives error wrapping by callers.
+func isQueryNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "unexpected status 404")
 }
 
 // QueryAll walks pagination until the server reports HasMore=false or the
