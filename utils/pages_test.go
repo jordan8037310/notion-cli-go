@@ -475,6 +475,51 @@ func TestDuplicate_CallSequence(t *testing.T) {
 	}
 }
 
+// TestDuplicate_AllBlocksFilteredOut covers the edge case where the
+// source page has blocks but every block type is dropped by rebuildBlock
+// (image/file/video/embed/bookmark/equation/child_database etc.). Without
+// the empty-after-filter fast path, blocksToChildren would yield [] and
+// the next PATCH would hit /blocks/{newID}/children with `children: []`,
+// which Notion rejects — leaving an empty destination page behind.
+// Closes the Duplicate edge case from #54.
+func TestDuplicate_AllBlocksFilteredOut(t *testing.T) {
+	var sawChildrenPatch int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/pages/"):
+			writeJSONPage(w, strings.TrimPrefix(r.URL.Path, "/pages/"), false, "Image-only page")
+		case r.Method == http.MethodPost && r.URL.Path == "/pages":
+			writeJSONPage(w, "newPageID", false, "Image-only page")
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/children"):
+			// Source has only block types rebuildBlock drops.
+			_ = json.NewEncoder(w).Encode(BlockList{Results: []Block{
+				{Object: "block", ID: "i1", Type: "image"},
+				{Object: "block", ID: "f1", Type: "file"},
+				{Object: "block", ID: "v1", Type: "video"},
+			}})
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/children"):
+			atomic.AddInt64(&sawChildrenPatch, 1)
+			http.Error(w, `{"object":"error","status":400,"code":"validation_error","message":"Body should have at least 1 child"}`, http.StatusBadRequest)
+		default:
+			http.Error(w, `{"code":"not_found"}`, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	pc := NewPageClient(NewClient("sk_test", WithBaseURL(srv.URL)))
+	newPage, err := pc.Duplicate(context.Background(), "srcID", "parentID")
+	if err != nil {
+		t.Fatalf("Duplicate (all-filtered source): %v — should have skipped the empty-children PATCH", err)
+	}
+	if newPage == nil || newPage.ID != "newPageID" {
+		t.Errorf("expected newPageID returned with title only; got %+v", newPage)
+	}
+	if got := atomic.LoadInt64(&sawChildrenPatch); got != 0 {
+		t.Errorf("Duplicate sent %d children PATCH(es); want 0 (empty filter result must not hit /children)", got)
+	}
+}
+
 func TestDuplicate_EmptyArgs(t *testing.T) {
 	m := newPagesMockServer(t)
 	pc := NewPageClient(m.client())

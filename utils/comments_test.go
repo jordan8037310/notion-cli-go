@@ -3,12 +3,44 @@ package utils
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// TestCommentClient_MissingAPIKey verifies List/ListPage/Create surface
+// ErrMissingAPIKey instead of panicking on nil client or falling through
+// to a remote 401. Closes the CommentClient half of #54.
+func TestCommentClient_MissingAPIKey(t *testing.T) {
+	client := NewCommentClient(NewClient("", WithBaseURL("http://127.0.0.1:0")))
+
+	if _, err := client.List(context.Background(), "block-id"); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("List: err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+	if _, err := client.ListPage(context.Background(), "block-id", ""); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("ListPage: err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+	req := CreateCommentRequest{Parent: &CommentParent{PageID: "p"}, RichText: NewCommentRichText("hi")}
+	if _, err := client.Create(context.Background(), req); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("Create: err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+}
+
+// TestCommentClient_NilClientNoPanic confirms NewCommentClient(nil) does
+// not panic on first call.
+func TestCommentClient_NilClientNoPanic(t *testing.T) {
+	client := NewCommentClient(nil)
+	if _, err := client.List(context.Background(), "block-id"); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("List(nil client): err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+	req := CreateCommentRequest{Parent: &CommentParent{PageID: "p"}, RichText: NewCommentRichText("hi")}
+	if _, err := client.Create(context.Background(), req); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("Create(nil client): err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+}
 
 // commentsMock is a dedicated httptest server for the comments endpoints.
 // It keeps per-test call counts so tests can assert pagination actually

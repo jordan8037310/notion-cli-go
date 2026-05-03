@@ -3,12 +3,37 @@ package utils
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// TestSearchClient_MissingAPIKey verifies Search/SearchAll surface
+// ErrMissingAPIKey instead of panicking on a nil client or falling
+// through to an opaque 401 from Notion. Mirrors the contract on
+// PageClient/UserClient/TeamClient. Regression guard for #54.
+func TestSearchClient_MissingAPIKey(t *testing.T) {
+	client := NewSearchClient(NewClient("", WithBaseURL("http://127.0.0.1:0")))
+	if _, err := client.Search(context.Background(), SearchRequest{Query: "x"}); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("Search: err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+	if _, err := client.SearchAll(context.Background(), SearchRequest{Query: "x"}, 10); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("SearchAll: err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+}
+
+// TestSearchClient_NilClientNoPanic confirms NewSearchClient(nil) does
+// not panic on first call — library callers wiring through a test seam
+// get a typed error.
+func TestSearchClient_NilClientNoPanic(t *testing.T) {
+	client := NewSearchClient(nil)
+	if _, err := client.Search(context.Background(), SearchRequest{}); !errors.Is(err, ErrMissingAPIKey) {
+		t.Errorf("Search(nil client): err = %v, want errors.Is ErrMissingAPIKey", err)
+	}
+}
 
 // newSearchMock returns an httptest server that handles POST /search, with
 // behavior driven by the query field of the request body. This mirrors the
