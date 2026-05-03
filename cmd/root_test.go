@@ -86,6 +86,19 @@ func TestShouldSuppressBanner_JSONForms(t *testing.T) {
 		{"output_space_text", []string{"notioncli", "list", "--output", "text"}, false},
 		{"output_trailing_no_value", []string{"notioncli", "list", "--output"}, false},
 		{"help", []string{"notioncli", "--help"}, false},
+
+		// Cobra-standard boolean spellings — #67. Anything strconv.ParseBool
+		// recognises as true must suppress; anything it recognises as false
+		// must NOT suppress (explicit-off should keep the banner the same as
+		// no flag at all).
+		{"json_equals_true", []string{"notioncli", "list", "--json=true"}, true},
+		{"json_equals_True", []string{"notioncli", "list", "--json=True"}, true},
+		{"json_equals_TRUE", []string{"notioncli", "list", "--json=TRUE"}, true},
+		{"json_equals_1", []string{"notioncli", "list", "--json=1"}, true},
+		{"json_equals_t", []string{"notioncli", "list", "--json=t"}, true},
+		{"json_equals_false", []string{"notioncli", "list", "--json=false"}, false},
+		{"json_equals_0", []string{"notioncli", "list", "--json=0"}, false},
+		{"json_equals_garbage", []string{"notioncli", "list", "--json=maybe"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
