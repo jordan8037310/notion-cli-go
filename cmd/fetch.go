@@ -130,14 +130,20 @@ func emitDatabase(cmd *cobra.Command, db *utils.Database) error {
 	return nil
 }
 
-// pagePlainTitle digs the plain-text title out of a page's loose Properties
-// map. Returns "" when no title property is found so callers can fall back
-// to a placeholder. Mirrors utils.extractTitle but lives in cmd to keep
-// the utils package free of presentation-layer helpers.
+// pagePlainTitle digs the plain-text title out of a page's loose
+// Properties map. Returns "" when no title property is found so callers
+// can fall back to a placeholder. Walks the property map and matches by
+// the Notion property type (== "title"), so renamed title columns
+// (e.g. "Name", "Client Name", "Project") work — see issue #60.
+//
+// Concatenates every rich-text run rather than returning the first
+// non-empty one, so titles split across multiple runs (mentions, mixed
+// formatting, links) round-trip in full — closes #65.
 func pagePlainTitle(page *utils.Page) string {
 	if page == nil {
 		return ""
 	}
+	var sb strings.Builder
 	for _, v := range page.Properties {
 		m, ok := v.(map[string]interface{})
 		if !ok {
@@ -152,9 +158,12 @@ func pagePlainTitle(page *utils.Page) string {
 			if !ok {
 				continue
 			}
-			if pt, ok := run["plain_text"].(string); ok && pt != "" {
-				return pt
+			if pt, ok := run["plain_text"].(string); ok {
+				sb.WriteString(pt)
 			}
+		}
+		if sb.Len() > 0 {
+			return sb.String()
 		}
 	}
 	return ""
