@@ -29,10 +29,13 @@ var listCmd = &cobra.Command{
 		// The human path below is the only consumer of localTimezone,
 		// so the lookup moves to right before GetToDoBlocks.
 		if globalJSON {
-			// GetAllBlocks with "to_do" mirrors the human list by only
-			// returning to-do blocks. emitList picks NDJSON or a pretty
-			// JSON array depending on --pretty.
-			blocks, err := utils.GetAllBlocks(notionAPIKey, pageID, "to_do")
+			// Use the same "visible to-do" view the human list uses:
+			// to_do-typed AND non-empty rich_text. GetAllBlocks(...,
+			// "to_do") would surface blank checkboxes that `list` text
+			// mode hides, breaking the contract that --json mirrors the
+			// human numbering. Closes the regression Codex caught on
+			// PR #75 (fallout from PR #56).
+			blocks, err := utils.GetVisibleToDoBlocks(notionAPIKey, pageID)
 			if err != nil {
 				return jsonErrorOr(cmd, fmt.Errorf("list: fetch blocks: %w", err))
 			}

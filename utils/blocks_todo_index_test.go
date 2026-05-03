@@ -118,6 +118,89 @@ func TestToDoIndex_ZeroToDosErrors(t *testing.T) {
 	}
 }
 
+// TestToDoIndex_SkipsEmptyToDos pins the post-PR-#75 contract: empty
+// to-do blocks (no rich_text) are hidden from the human `list` command,
+// so check/uncheck/delete must skip them too. Otherwise ordinal N from
+// `list` resolves to a different block in the resolver, which is the
+// same data-loss class as the original #55 index drift.
+//
+// Fixture: [todo(""), todo("real-1"), todo(""), todo("real-2")]. The
+// human list shows the two real to-dos as ordinals 1 and 2; the
+// resolver must agree.
+func TestToDoIndex_SkipsEmptyToDos(t *testing.T) {
+	srv, captured := newEmptyTodosMixedServer(t)
+	defer srv.Close()
+	prev := baseURL
+	SetBaseURL(srv.URL)
+	defer SetBaseURL(prev)
+
+	c := NewBlockClient(NewClient("k", WithBaseURL(srv.URL)))
+
+	if err := c.MarkToDoBlockChecked(context.Background(), "emptyMixedPage", 1); err != nil {
+		t.Fatalf("MarkToDoBlockChecked(ordinal=1): %v", err)
+	}
+	if _, gotID := captured(); gotID != "real-1" {
+		t.Errorf("ordinal 1 hit %q, want \"real-1\" (the empty to-do at absolute position 1 must be skipped)", gotID)
+	}
+
+	if err := c.MarkToDoBlockChecked(context.Background(), "emptyMixedPage", 2); err != nil {
+		t.Fatalf("MarkToDoBlockChecked(ordinal=2): %v", err)
+	}
+	if _, gotID := captured(); gotID != "real-2" {
+		t.Errorf("ordinal 2 hit %q, want \"real-2\" (skipping empty at absolute position 3)", gotID)
+	}
+
+	// Out of range: only 2 visible to-dos, not 4.
+	err := c.MarkToDoBlockChecked(context.Background(), "emptyMixedPage", 3)
+	if err == nil {
+		t.Fatal("ordinal 3 should be out of range (page has 2 visible to-dos), got nil")
+	}
+	if !strings.Contains(err.Error(), "2 to-do block") {
+		t.Errorf("err = %v; want substring '2 to-do block' (the visible count)", err)
+	}
+}
+
+// newEmptyTodosMixedServer returns a fixture with empty and non-empty
+// to-do blocks interleaved. Used by TestToDoIndex_SkipsEmptyToDos.
+func newEmptyTodosMixedServer(t *testing.T) (*httptest.Server, func() (string, string)) {
+	t.Helper()
+
+	var mu sync.Mutex
+	var lastMethod, lastBlockID string
+
+	blocks := []Block{
+		{Object: "block", ID: "blank-1", Type: "to_do", ToDo: &ToDo{Checked: false}}, // empty rich_text
+		{Object: "block", ID: "real-1", Type: "to_do", ToDo: &ToDo{Checked: false, RichText: []RichText{{PlainText: "first task"}}}},
+		{Object: "block", ID: "blank-2", Type: "to_do", ToDo: &ToDo{Checked: false}}, // empty rich_text
+		{Object: "block", ID: "real-2", Type: "to_do", ToDo: &ToDo{Checked: false, RichText: []RichText{{PlainText: "second task"}}}},
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/blocks/emptyMixedPage/children":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(BlockList{Results: blocks})
+		case strings.HasPrefix(r.URL.Path, "/blocks/") && (r.Method == http.MethodPatch || r.Method == http.MethodDelete):
+			id := strings.TrimPrefix(r.URL.Path, "/blocks/")
+			mu.Lock()
+			lastMethod = r.Method
+			lastBlockID = id
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		default:
+			http.Error(w, `{"object":"error","code":"not_found"}`, http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv, func() (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		return lastMethod, lastBlockID
+	}
+}
+
 // TestToDoIndex_OutOfRangeNamesToDoCount asserts the error message when
 // the requested ordinal exceeds the to-do count cites the to-do count,
 // not the total-block count, so users have a useful number to act on.

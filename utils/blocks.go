@@ -147,16 +147,43 @@ func (b *BlockClient) MarkToDoBlockUnChecked(ctx context.Context, pageID string,
 	return b.setToDoChecked(ctx, pageID, order, false)
 }
 
+// GetVisibleToDoBlocks returns the to-do blocks the human `list` and
+// `list --json` commands surface — type-filtered AND empty-rich-text
+// filtered. Notion lets users add a checkbox without text (a "blank"
+// to-do), and `notioncli list` deliberately hides those. Every command
+// that targets a to-do by 1-based ordinal must index into THIS view
+// rather than `GetAllBlocks(..., "to_do")` so the numbering stays
+// consistent across list / list --json / check / uncheck / delete.
+//
+// PR #56 originally fixed the index drift between absolute and to-do
+// numbering (#55), but the new resolver still indexed empty to-dos
+// while the human list path didn't. Discovered by Codex review of
+// PR #75.
+func (b *BlockClient) GetVisibleToDoBlocks(ctx context.Context, pageID string) ([]Block, error) {
+	all, err := b.GetAllBlocks(ctx, pageID, "to_do")
+	if err != nil {
+		return nil, err
+	}
+	visible := all[:0:len(all)]
+	for _, blk := range all {
+		if blk.ToDo != nil && len(blk.ToDo.RichText) > 0 {
+			visible = append(visible, blk)
+		}
+	}
+	return visible, nil
+}
+
 // resolveToDoBlockID translates a 1-based to-do ordinal (the same
 // numbering `notioncli list` prints) into the underlying Notion block
-// id by fetching only the page's to-do blocks. Centralising this here
-// keeps check/uncheck/delete in lockstep — every to-do command must
-// see the same numbering as `list`. Closes #55.
+// id by fetching only the page's *visible* to-do blocks. Centralising
+// this here keeps check/uncheck/delete in lockstep — every to-do
+// command must see the same numbering as `list`. Closes #55 (initial
+// fix in PR #56) and the empty-todo regression Codex caught on PR #75.
 func (b *BlockClient) resolveToDoBlockID(ctx context.Context, pageID string, order int) (string, error) {
 	if order < 1 {
 		return "", fmt.Errorf("order must be greater than 0")
 	}
-	todos, err := b.GetAllBlocks(ctx, pageID, "to_do")
+	todos, err := b.GetVisibleToDoBlocks(ctx, pageID)
 	if err != nil {
 		return "", err
 	}
