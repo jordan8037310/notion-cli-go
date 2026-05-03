@@ -97,12 +97,13 @@ func newEnhancedMock(t *testing.T) *httptest.Server {
 				todo("t2", "second", true),
 			}})
 
-		// Used by GetBlockID tests: 3 blocks.
+		// Used by GetBlockID + Mark/Delete to-do tests: 3 visible to-dos
+		// (non-empty rich_text required by GetVisibleToDoBlocks).
 		case r.Method == http.MethodGet && r.URL.Path == "/blocks/threeBlocksPage/children":
 			writeJSON(w, BlockList{Results: []Block{
-				{Object: "block", ID: "b-1", Type: "to_do"},
-				{Object: "block", ID: "b-2", Type: "to_do"},
-				{Object: "block", ID: "b-3", Type: "to_do"},
+				todo("b-1", "first", false),
+				todo("b-2", "second", false),
+				todo("b-3", "third", false),
 			}})
 
 		// PATCH to a block id (any) → 200 (MarkToDoBlockChecked/Unchecked)

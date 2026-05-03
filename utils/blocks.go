@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -51,10 +52,22 @@ func (b *BlockClient) GetBlocks(ctx context.Context, pageID string) ([]Block, er
 	return blocks, nil
 }
 
-// GetToDoBlocks returns formatted to-do strings (index, check state, text,
-// last-edited time) for the given page, in the supplied timezone.
+// GetToDoBlocks returns formatted to-do strings (index, check state,
+// text, last-edited time) for the given page, in the supplied timezone.
+//
+// Routes through GetVisibleToDoBlocks so the human `list` view uses
+// the same paginated, empty-filtered slice the resolver
+// (check/uncheck/delete) indexes into. Pre-fix this read only the
+// first /blocks/{id}/children page via GetBlocks, so on long pages
+// `list` stopped at 100 items while the mutating commands still
+// resolved into later tasks — a numbering drift on top of the one
+// PR #56 already fixed.
+//
+// The label concatenates every rich_text run instead of just
+// RichText[0].PlainText, so to-dos containing mentions, links, or
+// multiple text segments render in full.
 func (b *BlockClient) GetToDoBlocks(ctx context.Context, pageID string, localTimezone *time.Location) ([]string, error) {
-	blocks, err := b.GetBlocks(ctx, pageID)
+	blocks, err := b.GetVisibleToDoBlocks(ctx, pageID)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +85,11 @@ func (b *BlockClient) GetToDoBlocks(ctx context.Context, pageID string, localTim
 			return nil, err
 		}
 		truncatedTime := lastEditedTime.In(localTimezone).Truncate(time.Minute)
-		element := fmt.Sprintf("%d [%s] %s (%s)", len(todoBlocks)+1, checked, block.ToDo.RichText[0].PlainText, truncatedTime.Format("2006-01-02 15:04"))
+		var label strings.Builder
+		for _, run := range block.ToDo.RichText {
+			label.WriteString(run.PlainText)
+		}
+		element := fmt.Sprintf("%d [%s] %s (%s)", len(todoBlocks)+1, checked, label.String(), truncatedTime.Format("2006-01-02 15:04"))
 		todoBlocks = append(todoBlocks, element)
 	}
 	return todoBlocks, nil
@@ -147,16 +164,43 @@ func (b *BlockClient) MarkToDoBlockUnChecked(ctx context.Context, pageID string,
 	return b.setToDoChecked(ctx, pageID, order, false)
 }
 
+// GetVisibleToDoBlocks returns the to-do blocks the human `list` and
+// `list --json` commands surface — type-filtered AND empty-rich-text
+// filtered. Notion lets users add a checkbox without text (a "blank"
+// to-do), and `notioncli list` deliberately hides those. Every command
+// that targets a to-do by 1-based ordinal must index into THIS view
+// rather than `GetAllBlocks(..., "to_do")` so the numbering stays
+// consistent across list / list --json / check / uncheck / delete.
+//
+// PR #56 originally fixed the index drift between absolute and to-do
+// numbering (#55), but the new resolver still indexed empty to-dos
+// while the human list path didn't. Discovered by Codex review of
+// PR #75.
+func (b *BlockClient) GetVisibleToDoBlocks(ctx context.Context, pageID string) ([]Block, error) {
+	all, err := b.GetAllBlocks(ctx, pageID, "to_do")
+	if err != nil {
+		return nil, err
+	}
+	visible := all[:0:len(all)]
+	for _, blk := range all {
+		if blk.ToDo != nil && len(blk.ToDo.RichText) > 0 {
+			visible = append(visible, blk)
+		}
+	}
+	return visible, nil
+}
+
 // resolveToDoBlockID translates a 1-based to-do ordinal (the same
 // numbering `notioncli list` prints) into the underlying Notion block
-// id by fetching only the page's to-do blocks. Centralising this here
-// keeps check/uncheck/delete in lockstep — every to-do command must
-// see the same numbering as `list`. Closes #55.
+// id by fetching only the page's *visible* to-do blocks. Centralising
+// this here keeps check/uncheck/delete in lockstep — every to-do
+// command must see the same numbering as `list`. Closes #55 (initial
+// fix in PR #56) and the empty-todo regression Codex caught on PR #75.
 func (b *BlockClient) resolveToDoBlockID(ctx context.Context, pageID string, order int) (string, error) {
 	if order < 1 {
 		return "", fmt.Errorf("order must be greater than 0")
 	}
-	todos, err := b.GetAllBlocks(ctx, pageID, "to_do")
+	todos, err := b.GetVisibleToDoBlocks(ctx, pageID)
 	if err != nil {
 		return "", err
 	}

@@ -399,6 +399,15 @@ func GetToDoBlocks(notionAPIKey, blockID string, localTimezone *time.Location) (
 	return defaultBlockClient(notionAPIKey).GetToDoBlocks(defaultCtx(), blockID, localTimezone)
 }
 
+// GetVisibleToDoBlocks delegates to BlockClient.GetVisibleToDoBlocks on a
+// default client. Returns the to-do blocks that the human `list` and
+// `list --json` commands surface — type-filtered AND non-empty rich_text.
+//
+// Deprecated: prefer BlockClient.GetVisibleToDoBlocks.
+func GetVisibleToDoBlocks(notionAPIKey, pageID string) ([]Block, error) {
+	return defaultBlockClient(notionAPIKey).GetVisibleToDoBlocks(defaultCtx(), pageID)
+}
+
 // AddNewToDoItem delegates to BlockClient.AddNewToDoItem on a default client.
 //
 // Deprecated: prefer BlockClient.AddNewToDoItem.
