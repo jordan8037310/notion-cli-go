@@ -583,9 +583,13 @@ func rebuildBlock(b Block) map[string]interface{} {
 		if b.ToDo == nil {
 			return nil
 		}
-		return richTextChild("to_do", map[string]interface{}{
+		extra := map[string]interface{}{
 			"checked": b.ToDo.Checked,
-		}, b.ToDo.RichText)
+		}
+		if b.ToDo.Color != "" && b.ToDo.Color != "default" {
+			extra["color"] = b.ToDo.Color
+		}
+		return richTextChild("to_do", extra, b.ToDo.RichText)
 	case "paragraph":
 		return richTextFromBlock("paragraph", b.Paragraph)
 	case "heading_1":
@@ -614,16 +618,32 @@ func rebuildBlock(b Block) map[string]interface{} {
 		} else {
 			extra["language"] = "plain text"
 		}
+		if b.Code.Color != "" && b.Code.Color != "default" {
+			extra["color"] = b.Code.Color
+		}
 		return richTextChild("code", extra, b.Code.RichText)
 	}
 	return nil
 }
 
+// richTextFromBlock rebuilds the children-create payload for a block
+// whose body is a RichTextBlock (paragraph, heading_1/2/3, list items,
+// toggle, quote, callout). Forwards Color so duplicating a coloured
+// paragraph/heading/etc. preserves the colour rather than resetting to
+// default — closes #84.
+//
+// "default" is treated as no color so we don't bake a redundant field
+// into the payload (Notion's default when the field is omitted is
+// "default" anyway).
 func richTextFromBlock(typ string, rtb *RichTextBlock) map[string]interface{} {
 	if rtb == nil {
 		return nil
 	}
-	return richTextChild(typ, nil, rtb.RichText)
+	var extra map[string]interface{}
+	if rtb.Color != "" && rtb.Color != "default" {
+		extra = map[string]interface{}{"color": rtb.Color}
+	}
+	return richTextChild(typ, extra, rtb.RichText)
 }
 
 func richTextChild(typ string, extra map[string]interface{}, runs []RichText) map[string]interface{} {
