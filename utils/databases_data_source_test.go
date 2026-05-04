@@ -131,6 +131,76 @@ func TestDatabaseClient_QueryDoesNotFallBackOnNon404(t *testing.T) {
 	}
 }
 
+// TestDatabaseClient_QueryFallsBackOn400InvalidRequestURL covers the
+// shape Notion returns when an id-vs-endpoint mismatch lands at the
+// URL parser before the resource lookup: 400 invalid_request_url.
+// The data_sources probe gets that response when the id is actually a
+// legacy database (not a data_source), so the fallback must fire even
+// though the status isn't 404. Without this branch the
+// "LS-36 reproducer" 400'd through despite PR #71's probe.
+func TestDatabaseClient_QueryFallsBackOn400InvalidRequestURL(t *testing.T) {
+	var dataSourceHits, databaseHits int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/data_sources/"):
+			atomic.AddInt64(&dataSourceHits, 1)
+			http.Error(w, `{"object":"error","status":400,"code":"invalid_request_url","message":"Invalid request URL."}`, http.StatusBadRequest)
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/databases/") && strings.HasSuffix(r.URL.Path, "/query"):
+			atomic.AddInt64(&databaseHits, 1)
+			_ = json.NewEncoder(w).Encode(QueryResponse{
+				Object:  "list",
+				Results: []Page{{Object: "page", ID: "legacy-row"}},
+			})
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	d := NewDatabaseClient(NewClient("k", WithBaseURL(srv.URL)))
+	resp, err := d.Query(context.Background(), "legacy-db-id", nil, nil, "", 0)
+	if err != nil {
+		t.Fatalf("Query (400 invalid_request_url fallback): %v", err)
+	}
+	if resp == nil || len(resp.Results) != 1 || resp.Results[0].ID != "legacy-row" {
+		t.Errorf("fallback Query returned %+v, want one row with id legacy-row", resp)
+	}
+	if got := atomic.LoadInt64(&dataSourceHits); got != 1 {
+		t.Errorf("data_sources probe hits = %d, want 1", got)
+	}
+	if got := atomic.LoadInt64(&databaseHits); got != 1 {
+		t.Errorf("databases fallback hits = %d, want 1 (400 invalid_request_url must trigger fallback)", got)
+	}
+}
+
+// TestDatabaseClient_QueryWrapsBothProbesFailing pins the actionable-
+// error contract: when both probes return 400 invalid_request_url
+// (the id genuinely isn't queryable from this integration), the user
+// gets a wrapped error pointing at the most likely cause and a
+// follow-up command, instead of the raw API JSON.
+func TestDatabaseClient_QueryWrapsBothProbesFailing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"object":"error","status":400,"code":"invalid_request_url","message":"Invalid request URL."}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	d := NewDatabaseClient(NewClient("k", WithBaseURL(srv.URL)))
+	_, err := d.Query(context.Background(), "unknown-or-unshared-id", nil, nil, "", 0)
+	if err == nil {
+		t.Fatal("expected error when both probes 400, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"is not queryable",
+		"shared with this integration",
+		"databases get",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("err = %q\nwant substring %q so the user knows what to do next", msg, want)
+		}
+	}
+}
+
 // TestDatabaseClient_GetProbesDatabaseFirst pins the symmetric contract
 // for Get(): try /databases/{id} first (legacy), fall back to
 // /data_sources/{id} on 404. The order is reversed from Query's because
