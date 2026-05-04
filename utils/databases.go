@@ -121,7 +121,7 @@ func (d *DatabaseClient) Get(ctx context.Context, id string) (*Database, error) 
 	if err == nil {
 		return db, nil
 	}
-	if !isQueryNotFound(err) {
+	if !isQueryFallbackTrigger(err) {
 		return nil, err
 	}
 	return d.getOnce(ctx, "/data_sources/"+id)
@@ -187,15 +187,27 @@ func (d *DatabaseClient) Query(ctx context.Context, id string, filter, sort json
 	}
 
 	// Probe data_sources first (2026-03-11 default).
-	out, err := d.postQuery(ctx, "/data_sources/"+id+"/query", body)
-	if err == nil {
+	out, dsErr := d.postQuery(ctx, "/data_sources/"+id+"/query", body)
+	if dsErr == nil {
 		return out, nil
 	}
-	if !isQueryNotFound(err) {
-		return nil, err
+	if !isQueryFallbackTrigger(dsErr) {
+		return nil, dsErr
 	}
 	// Fall back to the legacy databases endpoint for unmigrated DBs.
-	return d.postQuery(ctx, "/databases/"+id+"/query", body)
+	out, dbErr := d.postQuery(ctx, "/databases/"+id+"/query", body)
+	if dbErr == nil {
+		return out, nil
+	}
+	// Both endpoints rejected the id. The verbatim API error is
+	// noisy and unhelpful (`unexpected status 400: {"object":"error",
+	// "code":"invalid_request_url",...}`) — wrap with a message that
+	// points at the most likely cause (id type mismatch or unshared
+	// resource) so the user has a concrete next step.
+	if isQueryFallbackTrigger(dbErr) {
+		return nil, fmt.Errorf("query database: id %q is not queryable as a data_source or database — confirm it's shared with this integration and that it's a data_source ID (not a page or block); try `notioncli databases get %s` for the access-level error message. Underlying API error: %w", id, id, dbErr)
+	}
+	return nil, dbErr
 }
 
 // postQuery is the shared transport for both the data_sources and the
@@ -217,15 +229,41 @@ func (d *DatabaseClient) postQuery(ctx context.Context, path string, body map[st
 	return &out, nil
 }
 
-// isQueryNotFound reports whether err looks like a 404 from the Notion
-// API. utils.decodeInto wraps non-2xx as "unexpected status N: ...";
-// match the substring rather than a typed status code so the check
-// survives error wrapping by callers.
-func isQueryNotFound(err error) bool {
+// isQueryFallbackTrigger reports whether err is the kind that should
+// trigger a probe of the OTHER endpoint (data_sources ↔ databases).
+// Two shapes qualify:
+//
+//  1. **404 object_not_found** — the id doesn't exist at this endpoint.
+//     Triggered when probing `/data_sources/{id}/query` against a real
+//     legacy database, or when probing `/databases/{id}` against a
+//     real 2026-03-11 data_source.
+//
+//  2. **400 invalid_request_url** — Notion's response when the URL
+//     pattern doesn't apply to the resource type behind the id (the
+//     id is recognised but as a different object). Distinct from 404:
+//     `/data_sources/{id}/query` against a database id returns 400,
+//     not 404, so the fallback never fired without this branch. This
+//     is the bug behind the "LS-36 reproducer" still failing on the
+//     post-PR-#71 binary.
+//
+// utils.decodeInto wraps non-2xx as "unexpected status N: ..."; match
+// the substring rather than a typed status code so the check survives
+// error wrapping by callers.
+//
+// Renamed from isQueryNotFound — old name was too narrow for what we
+// actually need to fall back on.
+func isQueryFallbackTrigger(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "unexpected status 404")
+	msg := err.Error()
+	if strings.Contains(msg, "unexpected status 404") {
+		return true
+	}
+	if strings.Contains(msg, "unexpected status 400") && strings.Contains(msg, "invalid_request_url") {
+		return true
+	}
+	return false
 }
 
 // QueryAll walks pagination until the server reports HasMore=false or the
