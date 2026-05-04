@@ -607,6 +607,53 @@ func TestBlocksToChildren(t *testing.T) {
 	}
 }
 
+// TestBlocksToChildren_PreservesBlockColor pins the #84 contract:
+// duplicating a page must round-trip the block-level Color field on
+// every richTextBlock-backed type (paragraph/heading/list/quote/
+// toggle/callout/code) plus the to_do flavour. Pre-fix richTextFromBlock
+// dropped Color universally; the to_do and code paths also dropped it
+// even though they were already setting other fields via extra.
+//
+// "default" is omitted (Notion's default-when-absent equals "default")
+// to keep payloads minimal.
+func TestBlocksToChildren_PreservesBlockColor(t *testing.T) {
+	blocks := []Block{
+		{Type: "paragraph", Paragraph: &RichTextBlock{Color: "red", RichText: []RichText{{PlainText: "p"}}}},
+		{Type: "heading_1", Heading1: &RichTextBlock{Color: "blue_background", RichText: []RichText{{PlainText: "h"}}}},
+		{Type: "callout", Callout: &RichTextBlock{Color: "yellow", RichText: []RichText{{PlainText: "c"}}}},
+		{Type: "to_do", ToDo: &ToDo{Color: "green", Checked: true, RichText: []RichText{{PlainText: "d"}}}},
+		{Type: "code", Code: &RichTextBlock{Color: "gray", Language: "go", RichText: []RichText{{PlainText: "go code"}}}},
+		// Default colour should NOT serialise as "color: default" — must be omitted.
+		{Type: "quote", Quote: &RichTextBlock{Color: "default", RichText: []RichText{{PlainText: "q"}}}},
+	}
+	children := blocksToChildren(blocks)
+	if len(children) != len(blocks) {
+		t.Fatalf("want %d children, got %d", len(blocks), len(children))
+	}
+
+	wantColor := map[string]string{
+		"paragraph": "red",
+		"heading_1": "blue_background",
+		"callout":   "yellow",
+		"to_do":     "green",
+		"code":      "gray",
+	}
+	for _, c := range children {
+		typ, _ := c["type"].(string)
+		inner, _ := c[typ].(map[string]interface{})
+		if want, ok := wantColor[typ]; ok {
+			if got, _ := inner["color"].(string); got != want {
+				t.Errorf("%s: color = %q, want %q", typ, got, want)
+			}
+		}
+		if typ == "quote" {
+			if _, hasColor := inner["color"]; hasColor {
+				t.Errorf("quote with default color must NOT include color field; got %#v", inner)
+			}
+		}
+	}
+}
+
 // TestRichTextPayload covers the content fallback: when Text.Content is empty
 // the run's PlainText is used so round-tripping blocks from GET responses
 // doesn't lose text.
