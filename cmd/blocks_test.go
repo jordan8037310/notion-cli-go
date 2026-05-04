@@ -460,6 +460,58 @@ func TestBlocksAdd_RichTextJSONUnreadableFile(t *testing.T) {
 	}
 }
 
+// TestBlocksDelete_InvalidIndexExitsNonZero pins the post-#74 contract:
+// `blocks delete <not-a-number>` must propagate a non-nil error from
+// RunE so the process exits non-zero. Pre-fix the text-mode branch
+// printed via color.Red and returned nil — every CI script piping
+// through `blocks delete` would silently treat the failure as success.
+func TestBlocksDelete_InvalidIndexExitsNonZero(t *testing.T) {
+	_ = withCmdEnv(t)
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "delete", "not-a-number"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("blocks delete with non-numeric index should return non-nil error")
+	}
+	if !strings.Contains(err.Error(), "not a valid number") {
+		t.Errorf("err = %v; want substring 'not a valid number'", err)
+	}
+}
+
+// TestBlocksDelete_APIErrorExitsNonZero pins the same contract for the
+// DELETE-failed branch — when the upstream call errors, RunE must
+// propagate the error rather than swallowing it after color.Red.
+func TestBlocksDelete_APIErrorExitsNonZero(t *testing.T) {
+	srv := withCmdEnv(t)
+	origHandler := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Force every request to a 500 so blocks delete's API call
+		// fails. The default mock would 200 on the listing, so we
+		// short-circuit here.
+		if r.Method == http.MethodGet || r.Method == http.MethodDelete {
+			http.Error(w, `{"object":"error","status":500,"code":"server_error"}`, http.StatusInternalServerError)
+			return
+		}
+		origHandler.ServeHTTP(w, r)
+	})
+
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "delete", "1"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("blocks delete on a failing API should return non-nil error")
+	}
+	if !strings.Contains(err.Error(), "blocks delete") {
+		t.Errorf("err = %v; want wrapping context 'blocks delete'", err)
+	}
+}
+
 // TestBlocksDeleteDispatch runs `notioncli blocks delete 1` and asserts
 // that both a listing (to resolve the target id) and a DELETE were issued.
 func TestBlocksDeleteDispatch(t *testing.T) {
