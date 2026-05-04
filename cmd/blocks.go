@@ -65,6 +65,15 @@ var blocksListCmd = &cobra.Command{
 	Short: "List all blocks on the page",
 	Long:  `List all blocks on the Notion page with their type and content.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Suppress cobra's default "Error: ..." + usage block on
+		// non-nil RunE return so the colored errors below are the
+		// only error the user sees. Without this, cobra would
+		// double-print every error (once via color.Red, once via
+		// cobra) and dump the help block under each failure. Closes
+		// the exit-code half of #74.
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+
 		notionAPIKey, _ := utils.SetAPIConfig()
 		pageID, err := resolvePageID()
 		if err != nil {
@@ -83,8 +92,9 @@ var blocksListCmd = &cobra.Command{
 
 		localTimezone, err := utils.GetLocalTimeZone()
 		if err != nil {
+			wrapped := fmt.Errorf("blocks list: resolve local time zone: %w", err)
 			color.Red("Error getting timezone: %v", err)
-			return nil
+			return wrapped
 		}
 
 		// --resolve-mentions (persistent) opts into page-title
@@ -100,8 +110,9 @@ var blocksListCmd = &cobra.Command{
 			resolver,
 		)
 		if err != nil {
+			wrapped := fmt.Errorf("blocks list: %w", err)
 			color.Red("Error: %v", err)
-			return nil
+			return wrapped
 		}
 
 		if len(formatted) == 0 {
@@ -330,6 +341,11 @@ Example:
   notioncli blocks delete 3`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Same silence-pattern as blocksListCmd / blocksAddCmd —
+		// closes the exit-code half of #74.
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+
 		order, err := strconv.Atoi(args[0])
 		if err != nil {
 			wrapped := fmt.Errorf("blocks delete: %q is not a valid number: %w", args[0], err)
@@ -337,7 +353,7 @@ Example:
 				return jsonErrorOr(cmd, wrapped)
 			}
 			color.Red("Error: '%s' is not a valid number", args[0])
-			return nil
+			return wrapped
 		}
 
 		notionAPIKey, _ := utils.SetAPIConfig()
@@ -347,11 +363,12 @@ Example:
 		}
 
 		if err := utils.DeleteBlock(notionAPIKey, pageID, order); err != nil {
+			wrapped := fmt.Errorf("blocks delete: %w", err)
 			if globalJSON {
-				return jsonErrorOr(cmd, fmt.Errorf("blocks delete: %w", err))
+				return jsonErrorOr(cmd, wrapped)
 			}
 			color.Red("Error deleting block: %v", err)
-			return nil
+			return wrapped
 		}
 
 		if globalJSON {
