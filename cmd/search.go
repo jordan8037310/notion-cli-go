@@ -94,17 +94,24 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	return emitSearchTable(cmd, results)
 }
 
-// buildSearchFilter translates the user-facing --type value into the Notion
-// API filter object. Empty string means "no filter". Invalid values return
-// an error pointing at the allowed set.
+// buildSearchFilter translates the user-facing --type value into the
+// Notion API filter object. Empty string means "no filter". Invalid
+// values return an error pointing at the allowed set.
+//
+// Notion-Version 2026-03-11 returns `data_source` objects from
+// /v1/search instead of the legacy `database` shape — verified live
+// (Facet Interactive workspace: 81 data_source results, 0 database
+// results). The CLI keeps `--type databases` as the user-facing alias
+// because that's the term users still reach for, but the wire filter
+// follows what the API actually emits. See issue #79.
 func buildSearchFilter(typeFlag string) (*utils.SearchFilter, error) {
 	switch typeFlag {
 	case "":
 		return nil, nil
 	case "page", "pages":
 		return &utils.SearchFilter{Property: "object", Value: "page"}, nil
-	case "database", "databases":
-		return &utils.SearchFilter{Property: "object", Value: "database"}, nil
+	case "database", "databases", "data_source", "data_sources":
+		return &utils.SearchFilter{Property: "object", Value: "data_source"}, nil
 	}
 	return nil, fmt.Errorf("invalid --type %q (want pages|databases)", typeFlag)
 }

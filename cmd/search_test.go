@@ -132,8 +132,12 @@ func TestBuildSearchFilter(t *testing.T) {
 		{"", "", false},
 		{"pages", "page", false},
 		{"page", "page", false},
-		{"databases", "database", false},
-		{"database", "database", false},
+		// Notion-Version 2026-03-11 returns data_source objects; the
+		// CLI's --type databases alias maps to that wire value (#79).
+		{"databases", "data_source", false},
+		{"database", "data_source", false},
+		{"data_source", "data_source", false},
+		{"data_sources", "data_source", false},
 		{"users", "", true},
 		{"foo", "", true},
 	}
@@ -231,8 +235,11 @@ func TestSearchCmdTypeFilter(t *testing.T) {
 		t.Fatalf("rootCmd.Execute(search --type databases): %v", err)
 	}
 
-	if got, _ := stats.filter.Load().(string); got != "database" {
-		t.Errorf("filter sent = %q, want %q", got, "database")
+	// On Notion-Version 2026-03-11 the wire value is `data_source`
+	// (issue #79). The CLI keeps `--type databases` as the user-facing
+	// alias because that's the term users still type.
+	if got, _ := stats.filter.Load().(string); got != "data_source" {
+		t.Errorf("filter sent = %q, want %q", got, "data_source")
 	}
 }
 
