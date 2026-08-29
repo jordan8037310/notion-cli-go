@@ -2,10 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"notioncli/utils"
@@ -118,8 +122,8 @@ func TestFiles_Cmd_DispatchHappyPath(t *testing.T) {
 		{"blocks add-image", []string{"blocks", "add-image", filePath}, "Uploaded image"},
 		{"blocks add-file", []string{"blocks", "add-file", filePath}, "Uploaded file"},
 		{"blocks add-file with --name", []string{"blocks", "add-file", filePath, "--name", "nice-name.txt"}, "nice-name.txt"},
-		{"pages set-icon", []string{"pages", "set-icon", "page-abc", filePath}, "Uploaded icon for page"},
-		{"pages set-cover", []string{"pages", "set-cover", "page-abc", filePath}, "Uploaded cover for page"},
+		{"pages set-icon", []string{"pages", "set-icon", "page-abc", filePath}, "Set icon on page"},
+		{"pages set-cover", []string{"pages", "set-cover", "page-abc", filePath}, "Set cover on page"},
 	}
 
 	for _, tt := range tests {
@@ -202,5 +206,131 @@ func TestFiles_Cmd_Dispatch_ArgValidation(t *testing.T) {
 				t.Fatalf("%s: want cobra arg error, got nil", tt.name)
 			}
 		})
+	}
+}
+
+// TestFiles_SetIconCover_IssuesPatch guards issue #82. `pages set-icon`
+// and `pages set-cover` accepted a page id, uploaded the file, printed
+// "Uploaded icon for page <id> — icon PATCH deferred" and exited 0
+// without ever contacting that page. A typo'd or unshared id looked
+// exactly like success.
+//
+// Asserts the whole flow now: the page is verified, the file is
+// uploaded, and a PATCH lands on /pages/{id} carrying the file_upload
+// envelope under the right key.
+func TestFiles_SetIconCover_IssuesPatch(t *testing.T) {
+	for _, tc := range []struct {
+		cmdName string
+		field   string
+	}{
+		{"set-icon", "icon"},
+		{"set-cover", "cover"},
+	} {
+		t.Run(tc.cmdName, func(t *testing.T) {
+			srv := withCmdEnv(t)
+
+			tmp := t.TempDir()
+			filePath := filepath.Join(tmp, "hello.png")
+			if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+				t.Fatalf("write tmp file: %v", err)
+			}
+
+			var (
+				mu        sync.Mutex
+				pageGets  int
+				patchBody []byte
+				patchPath string
+			)
+			orig := srv.Config.Handler
+			srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/pages/") {
+					pageGets++
+				}
+				if r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/pages/") {
+					patchBody, _ = io.ReadAll(r.Body)
+					patchPath = r.URL.Path
+				}
+				mu.Unlock()
+				orig.ServeHTTP(w, r)
+			})
+
+			out, err := runFilesCmd(t, []string{"pages", tc.cmdName, "page-abc", filePath})
+			if err != nil {
+				t.Fatalf("%s: unexpected error: %v (output=%s)", tc.cmdName, err, out)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if pageGets == 0 {
+				t.Error("page id was never verified before the upload")
+			}
+			if patchPath != "/pages/page-abc" {
+				t.Fatalf("no PATCH landed on the page; got path %q", patchPath)
+			}
+
+			var body map[string]interface{}
+			if err := json.Unmarshal(patchBody, &body); err != nil {
+				t.Fatalf("PATCH body is not JSON: %v (%s)", err, patchBody)
+			}
+			field, ok := body[tc.field].(map[string]interface{})
+			if !ok {
+				t.Fatalf("PATCH body has no %q key: %s", tc.field, patchBody)
+			}
+			if field["type"] != "file_upload" {
+				t.Errorf("%s.type = %v, want file_upload", tc.field, field["type"])
+			}
+			fu, ok := field["file_upload"].(map[string]interface{})
+			if !ok || fu["id"] != "cmd-file-id" {
+				t.Errorf("%s.file_upload = %v, want the uploaded file id", tc.field, field["file_upload"])
+			}
+			if strings.Contains(out, "deferred") {
+				t.Errorf("output still claims the PATCH is deferred: %q", out)
+			}
+		})
+	}
+}
+
+// TestFiles_SetIcon_BadPageIDFails guards the other half of #82: a page
+// id that does not resolve must fail, not exit 0. It must also fail
+// BEFORE the upload, so a typo does not strand an orphaned file upload
+// in the workspace.
+func TestFiles_SetIcon_BadPageIDFails(t *testing.T) {
+	srv := withCmdEnv(t)
+
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "hello.png")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write tmp file: %v", err)
+	}
+
+	var mu sync.Mutex
+	uploads := 0
+	orig := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/pages/ghost" {
+			http.Error(w, `{"object":"error","code":"object_not_found"}`, http.StatusNotFound)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/file_uploads" {
+			mu.Lock()
+			uploads++
+			mu.Unlock()
+		}
+		orig.ServeHTTP(w, r)
+	})
+
+	_, err := runFilesCmd(t, []string{"pages", "set-icon", "ghost", filePath})
+	if err == nil {
+		t.Fatal("set-icon on an unresolvable page id exited 0; want an error")
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error should name the page id, got %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if uploads != 0 {
+		t.Errorf("uploaded %d file(s) despite the page id not resolving; want 0", uploads)
 	}
 }

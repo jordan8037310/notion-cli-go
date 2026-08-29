@@ -401,6 +401,52 @@ func (p *PageClient) Update(ctx context.Context, id string, req UpdatePageReques
 	return &page, nil
 }
 
+// SetIcon attaches a previously-uploaded file as the page's icon via
+// PATCH /v1/pages/{id}. ref must be a FileRef returned by
+// FileClient.Upload; Notion references it by file_upload id rather than
+// by URL.
+//
+// Before #82 the CLI's `pages set-icon` uploaded the file, printed a
+// success line naming the page, and exited 0 without ever touching the
+// page — so a typo'd or unshared page id looked like a success.
+func (p *PageClient) SetIcon(ctx context.Context, id string, ref *FileRef) error {
+	return p.setFileField(ctx, id, "icon", ref)
+}
+
+// SetCover is SetIcon for the page's cover image.
+func (p *PageClient) SetCover(ctx context.Context, id string, ref *FileRef) error {
+	return p.setFileField(ctx, id, "cover", ref)
+}
+
+// setFileField is the shared PATCH for the icon and cover fields, which
+// take the identical file_upload envelope and differ only in key.
+func (p *PageClient) setFileField(ctx context.Context, id, field string, ref *FileRef) error {
+	if err := p.checkAuth(); err != nil {
+		return fmt.Errorf("set %s: %w", field, err)
+	}
+	if id == "" {
+		return fmt.Errorf("set %s: page id is required", field)
+	}
+	if ref == nil || ref.ID == "" {
+		return fmt.Errorf("set %s: file reference is required", field)
+	}
+	body := map[string]interface{}{
+		field: map[string]interface{}{
+			"type":        "file_upload",
+			"file_upload": map[string]interface{}{"id": ref.ID},
+		},
+	}
+	req, err := p.c.newRequest(ctx, http.MethodPatch, "/pages/"+id, body)
+	if err != nil {
+		return err
+	}
+	resp, err := p.c.do(req)
+	if err != nil {
+		return fmt.Errorf("set %s: %w", field, err)
+	}
+	return expectStatus(resp, http.StatusOK)
+}
+
 // setInTrash issues the in_trash PATCH for Archive/Unarchive. The wire
 // format key is `in_trash` on Notion-Version 2026-03-11; the method names
 // remain Archive/Unarchive to preserve the CLI verbs familiar to callers.
