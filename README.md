@@ -6,16 +6,38 @@
 
 Notion CLI Go is a command-line interface tool written in Go to manage tasks in Notion.so. This tool is a new iteration based on the original [Python project](https://github.com/kris-hansen/notion-cli), now built in Go for improved performance and portability. This project is a work in progress, some of the features mentioned below are aspirational and not yet implemented.
 
-## Installation
+## Install
 
-To install the project, you'll need to clone the repository and build the Go application. Here are the basic instructions:
+The fastest path is the homebrew tap (macOS + linuxbrew):
 
 ```bash
-git clone https://github.com/kris-hansen/notion-cli-go
-cd notion-cli-go
-go build
-go install .
+brew install jordan8037310/notioncli/notioncli
 ```
+
+> The tap repo (`jordan8037310/homebrew-notioncli`) is published separately. If `brew tap` reports the tap is missing, fall back to one of the manual options below until the tap is live.
+
+**Manual via `go install`** (any platform with Go 1.21+):
+
+```bash
+go install github.com/jordan8037310/notion-cli-go@latest
+# binary lands in $(go env GOPATH)/bin as `notion-cli-go`; rename or symlink to `notioncli` if you like
+```
+
+**From source** (clone + build):
+
+```bash
+git clone https://github.com/jordan8037310/notion-cli-go
+cd notion-cli-go
+go build -o notioncli .
+```
+
+Confirm the install with:
+
+```bash
+notioncli version
+```
+
+Tagged releases are published at <https://github.com/jordan8037310/notion-cli-go/releases> with prebuilt darwin/linux binaries (amd64 + arm64) and per-asset sha256 sidecars.
 
 ## Configuration
 

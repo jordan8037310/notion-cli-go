@@ -1,0 +1,216 @@
+name: Release
+
+# Hand-rolled cross-platform release pipeline. Triggers on any annotated
+# semver tag (v*.*.*) and produces:
+#
+#   - a GitHub Release with darwin amd64+arm64 and linux amd64+arm64
+#     archives, each containing a notioncli binary linked with
+#     -X main.version=<tag>;
+#   - per-archive sha256 checksums (.sha256 sidecars) so downstream
+#     consumers can verify downloads;
+#   - the source-tarball sha256 in the release body so the
+#     homebrew-notioncli tap formula can copy it verbatim.
+#
+# GoReleaser is the eventual swap — see issue #36. This workflow is the
+# minimum viable cut so we can ship v0.1.0 without taking on the
+# GoReleaser config surface area today.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0). Required for manual dispatch."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache: true
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          archive="notioncli_${VERSION}_${GOOS}_${GOARCH}"
+          mkdir -p "dist/${archive}"
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "dist/${archive}/notioncli" .
+          cp LICENSE "dist/${archive}/LICENSE"
+          cp README.md "dist/${archive}/README.md"
+          tar -C dist -czf "dist/${archive}.tar.gz" "${archive}"
+          ( cd dist && sha256sum "${archive}.tar.gz" > "${archive}.tar.gz.sha256" )
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: notioncli-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/notioncli_*.tar.gz
+            dist/notioncli_*.tar.gz.sha256
+          retention-days: 7
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: notioncli-*
+          merge-multiple: true
+
+      - name: Verify tag exists on origin
+        env:
+          VERSION: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # workflow_dispatch lets a maintainer re-run the release for a
+          # given tag, but the source-tarball curl below depends on the
+          # tag actually being published on origin so GitHub serves the
+          # auto-generated archive. Fail fast with a clear instruction
+          # instead of the opaque "curl 404" the next step would emit
+          # otherwise (PR #50 second-pass review).
+          git fetch origin "refs/tags/${VERSION}:refs/tags/${VERSION}" 2>/dev/null || true
+          if ! git rev-parse --verify "refs/tags/${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Tag ${VERSION} not found on origin. Push the tag first (\`git tag -a ${VERSION} -m ${VERSION} && git push origin ${VERSION}\`) before re-running this workflow."
+            exit 1
+          fi
+
+      - name: Compute source tarball sha256
+        id: src_sha
+        env:
+          VERSION: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The source archive GitHub auto-publishes for every tag is the
+          # same artifact homebrew downloads. Pull it down, hash it, and
+          # surface the digest both as a step output and in the release
+          # body so the tap formula's `sha256` line is a copy-paste away.
+          # Brief retry — GitHub takes a few seconds to publish the
+          # auto-tarball after a fresh tag push.
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${VERSION}.tar.gz"
+          for i in 1 2 3 4 5; do
+            if curl -fsSL -o source.tar.gz "$url"; then
+              break
+            fi
+            echo "Source tarball not yet published (attempt $i); retrying in 5s..."
+            sleep 5
+          done
+          if [ ! -s source.tar.gz ]; then
+            echo "::error::Source tarball at ${url} did not become available after 25s."
+            exit 1
+          fi
+          sha=$(sha256sum source.tar.gz | awk '{print $1}')
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Source tarball sha256: ${sha}"
+
+      - name: Write release notes
+        id: notes
+        env:
+          VERSION: ${{ steps.tag.outputs.tag }}
+          SRC_SHA: ${{ steps.src_sha.outputs.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## notioncli ${VERSION}"
+            echo
+            echo "### Install"
+            echo
+            echo '```'
+            echo "brew install jordan8037310/notioncli/notioncli"
+            echo '```'
+            echo
+            echo "Or grab a binary archive from the assets below and put"
+            echo "\`notioncli\` somewhere on your \$PATH."
+            echo
+            echo "### Homebrew formula values"
+            echo
+            echo "Source tarball:"
+            echo
+            echo '```'
+            echo "url    https://github.com/${REPO}/archive/refs/tags/${VERSION}.tar.gz"
+            echo "sha256 ${SRC_SHA}"
+            echo '```'
+            echo
+            echo "Per-asset sha256 sidecars are published alongside each archive."
+          } > release-notes.md
+          echo "path=release-notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Idempotency: if the release already exists (re-run after a
+          # transient failure), upload assets onto the existing one
+          # instead of erroring out.
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists; uploading assets."
+            gh release upload "$VERSION" dist/notioncli_*.tar.gz dist/notioncli_*.tar.gz.sha256 \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$VERSION" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "notioncli $VERSION" \
+              --notes-file release-notes.md \
+              dist/notioncli_*.tar.gz dist/notioncli_*.tar.gz.sha256
+          fi

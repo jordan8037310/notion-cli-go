@@ -21,3 +21,14 @@
 
 # Binary
 notioncli
+
+# Coverage artifacts
+coverage.out
+coverage.html
+
+# Lando local state + in-container caches mounted at /app/.lando/
+.lando/
+.lando.local.yml
+# Claude Code project workspace (session state, worktrees)
+.claude/scheduled_tasks.lock
+.claude/worktrees/

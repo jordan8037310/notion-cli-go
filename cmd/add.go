@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"notioncli/utils"
-	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -13,16 +12,25 @@ var addCmd = &cobra.Command{
 	Short: "Add a new task",
 	Long:  `Add a new task to the Notion ToDo task list page`,
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		text := args[0]
-		notionAPIKey, pageID := utils.SetAPIConfig()
-		result := utils.AddNewToDoItem(notionAPIKey, pageID, text)
-		if result != nil {
-			fmt.Printf("Error adding new task: %s\n", result)
-			os.Exit(1)
+		notionAPIKey, _ := utils.SetAPIConfig()
+		pageID, err := resolvePageID()
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("add: %w", err))
 		}
-		fmt.Printf("Task %s added.\n", text)
-
+		if err := utils.AddNewToDoItem(notionAPIKey, pageID, text); err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("add: %w", err))
+		}
+		if globalJSON {
+			return emitOK(cmd.OutOrStdout(), map[string]interface{}{
+				"action": "add",
+				"text":   text,
+				"type":   "to_do",
+			})
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Task %s added.\n", text)
+		return nil
 	},
 }
 
