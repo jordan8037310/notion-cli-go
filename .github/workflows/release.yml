@@ -48,6 +48,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Check out the tag being released, not the ref that triggered
+          # the run. On a tag push these are the same thing. On
+          # workflow_dispatch they are not: the trigger ref is whatever
+          # branch the maintainer dispatched from, so re-running a
+          # release for an older tag built the binaries from that
+          # branch's HEAD while the source tarball, release notes and the
+          # -X main.version ldflag all pointed at the tag — the asset
+          # content silently drifted from the source it claimed to be
+          # (issue #63). inputs.tag is empty on a tag push, so the
+          # fallback to github.ref keeps that flow unchanged.
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -99,6 +111,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Check out the tag being released, not the ref that triggered
+          # the run. On a tag push these are the same thing. On
+          # workflow_dispatch they are not: the trigger ref is whatever
+          # branch the maintainer dispatched from, so re-running a
+          # release for an older tag built the binaries from that
+          # branch's HEAD while the source tarball, release notes and the
+          # -X main.version ldflag all pointed at the tag — the asset
+          # content silently drifted from the source it claimed to be
+          # (issue #63). inputs.tag is empty on a tag push, so the
+          # fallback to github.ref keeps that flow unchanged.
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Resolve tag
         id: tag
