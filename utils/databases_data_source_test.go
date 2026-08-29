@@ -193,7 +193,12 @@ func TestDatabaseClient_QueryWrapsBothProbesFailing(t *testing.T) {
 	for _, want := range []string{
 		"is not queryable",
 		"shared with this integration",
-		"databases get",
+		// Point at the command that actually resolves the situation. A
+		// database id is a container and cannot be queried; the user
+		// needs its data source ids, and `databases data-sources` is the
+		// only way to get them from the CLI (issue #94).
+		"databases data-sources",
+		"--data-source",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("err = %q\nwant substring %q so the user knows what to do next", msg, want)
@@ -269,5 +274,40 @@ func TestDatabaseClient_GetFallsBackToDataSourceOn404(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&databaseHits); got != 1 || atomic.LoadInt64(&dataSourceHits) != 1 {
 		t.Errorf("hits = (db=%d, ds=%d), want (1, 1)", databaseHits, dataSourceHits)
+	}
+}
+
+// TestDatabase_DataSourcesDecoded guards issue #94: the typed Database
+// struct did not model data_sources, so the CLI silently dropped the one
+// field Notion documents as the way to discover a data_source_id. Since
+// Notion-Version 2025-09-03 GET /v1/databases/{id} returns a *container*
+// envelope — title, icon, cover and this array, and no properties.
+func TestDatabase_DataSourcesDecoded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"object":"database","id":"db-1",
+			"title":[{"plain_text":"Tracker"}],
+			"is_inline":false,
+			"data_sources":[
+				{"id":"ds-aaa","name":"Source A"},
+				{"id":"ds-bbb","name":"Source B"}
+			]}`))
+	}))
+	defer srv.Close()
+
+	d := NewDatabaseClient(NewClient("k", WithBaseURL(srv.URL)))
+	db, err := d.Get(context.Background(), "db-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(db.DataSources) != 2 {
+		t.Fatalf("DataSources = %+v, want 2 entries", db.DataSources)
+	}
+	if db.DataSources[0].ID != "ds-aaa" || db.DataSources[0].Name != "Source A" {
+		t.Errorf("DataSources[0] = %+v", db.DataSources[0])
+	}
+	if db.DataSources[1].ID != "ds-bbb" || db.DataSources[1].Name != "Source B" {
+		t.Errorf("DataSources[1] = %+v", db.DataSources[1])
 	}
 }

@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -484,5 +485,99 @@ func TestPrintQueryResults(t *testing.T) {
 		if !strings.HasPrefix(ln, "{") {
 			t.Errorf("line not JSON: %q", ln)
 		}
+	}
+}
+
+// TestDatabasesDataSourcesDispatch covers the discovery command added for
+// issue #94. Notion's documented answer to "where do I find a
+// data_source_id" is to retrieve the parent database and read its
+// data_sources array; before this the CLI could tell a user their id was
+// not queryable and offer no way to reach the id that is.
+func TestDatabasesDataSourcesDispatch(t *testing.T) {
+	srv := withCmdEnv(t)
+	orig := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/databases/") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"database","id":"db-1",
+				"title":[{"plain_text":"Tracker"}],
+				"data_sources":[{"id":"ds-aaa","name":"Source A"},{"id":"ds-bbb","name":"Source B"}]}`))
+			return
+		}
+		orig.ServeHTTP(w, r)
+	})
+
+	t.Run("human", func(t *testing.T) {
+		resetDatabasesFlags()
+		resetRootCmdArgs()
+		var out bytes.Buffer
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&out)
+		rootCmd.SetArgs([]string{"databases", "data-sources", "db-1"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		for _, want := range []string{"ds-aaa", "Source A", "ds-bbb", "Source B"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("output missing %q:\n%s", want, out.String())
+			}
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		resetDatabasesFlags()
+		resetRootCmdArgs()
+		var out bytes.Buffer
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&out)
+		rootCmd.SetArgs([]string{"databases", "data-sources", "db-1", "--json"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if len(lines) != 2 {
+			t.Fatalf("want 2 NDJSON lines, got %d:\n%s", len(lines), out.String())
+		}
+		var first struct{ ID, Name string }
+		if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+			t.Fatalf("line 0 not JSON: %v", err)
+		}
+		if first.ID != "ds-aaa" || first.Name != "Source A" {
+			t.Errorf("first data source = %+v", first)
+		}
+	})
+}
+
+// TestDatabasesQueryDataSourceFlag confirms --data-source bypasses the
+// positional id, which is the only way to pick a source on a multi-source
+// database (issue #94).
+func TestDatabasesQueryDataSourceFlag(t *testing.T) {
+	srv := withCmdEnv(t)
+	var queried string
+	orig := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/query") {
+			queried = r.URL.Path
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","results":[],"has_more":false}`))
+			return
+		}
+		orig.ServeHTTP(w, r)
+	})
+
+	resetDatabasesFlags()
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"databases", "query", "db-container", "--data-source", "ds-aaa"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(queried, "ds-aaa") {
+		t.Errorf("query hit %q, want the --data-source id ds-aaa", queried)
+	}
+	if strings.Contains(queried, "db-container") {
+		t.Errorf("query used the positional container id %q despite --data-source", queried)
 	}
 }

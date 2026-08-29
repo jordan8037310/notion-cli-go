@@ -49,6 +49,26 @@ type Database struct {
 	Title          []RichText             `json:"title"`
 	Parent         PageParent             `json:"parent"`
 	Properties     map[string]interface{} `json:"properties"`
+	// DataSources lists the data sources this database contains. Present
+	// only on GET /v1/databases/{id}, which since Notion-Version
+	// 2025-09-03 returns a *container* envelope: title, icon, cover and
+	// this array — and NO properties, because a schema belongs to a data
+	// source, not to its container.
+	//
+	// Modelling it is what makes a data source id discoverable from the
+	// CLI at all. Notion's own documented answer to "where do I find a
+	// data_source_id" is to retrieve the parent database and read this
+	// array, and until it was modelled the typed struct silently dropped
+	// it — leaving `databases query` able to say "supply a data_source
+	// ID" and offer no way to obtain one (issue #94).
+	DataSources []DataSourceRef `json:"data_sources,omitempty"`
+}
+
+// DataSourceRef is one entry in a database's data_sources array: the id
+// to query and the human-readable name to pick it by.
+type DataSourceRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // DatabaseProperty is the v1 shape for a single schema entry in a
@@ -217,7 +237,7 @@ func (d *DatabaseClient) Query(ctx context.Context, id string, filter, sort json
 	// points at the most likely cause (id type mismatch or unshared
 	// resource) so the user has a concrete next step.
 	if isQueryFallbackTrigger(dbErr) {
-		return nil, fmt.Errorf("query database: id %q is not queryable as a data_source or database — confirm it's shared with this integration and that it's a data_source ID (not a page or block); try `notioncli databases get %s` for the access-level error message. Underlying API error: %w", id, id, dbErr)
+		return nil, fmt.Errorf("query database: id %q is not queryable as a data_source or database. If this is a *database* id, it is a container and cannot be queried directly — run `notioncli databases data-sources %s` to list its data sources and query one of those ids (or pass --data-source <id>). Otherwise confirm the id is shared with this integration and is not a page or block id. Underlying API error: %w", id, id, dbErr)
 	}
 	return nil, dbErr
 }
