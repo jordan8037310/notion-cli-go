@@ -144,6 +144,16 @@ func cmdMockServer(t *testing.T) *httptest.Server {
 		case r.Method == http.MethodGet && r.URL.Path == "/blocks/emptyPage/children":
 			writeJSON(w, utils.BlockList{Results: []utils.Block{}})
 
+		// GET /pages/{id}: a minimal page object. `pages set-icon` and
+		// `pages set-cover` verify the page id before uploading, so the
+		// happy path needs this to resolve (issue #82).
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/pages/"):
+			writeJSON(w, utils.Page{
+				Object: "page",
+				ID:     strings.TrimPrefix(r.URL.Path, "/pages/"),
+				URL:    "https://notion.so" + r.URL.Path,
+			})
+
 		// PATCH to /blocks/{id}/children (AddNewToDoItem, AddBlock) → 200
 		// PATCH to /blocks/{id} (MarkChecked, MarkUnchecked) → 200
 		case r.Method == http.MethodPatch:
