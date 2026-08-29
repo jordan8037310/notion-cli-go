@@ -93,6 +93,18 @@ func Execute() {
 	}
 	err := rootCmd.Execute()
 	if err != nil {
+		// JSON mode silences cobra's own error printing (issue #64) so a
+		// failure emits exactly one line: jsonErrorOr's envelope. But not
+		// every RunE routes its error through jsonErrorOr — several
+		// validation paths (cmd/views.go among them) return a bare error.
+		// Without this backstop those failures printed nothing at all on
+		// either stream and exited 1, which is strictly worse than the
+		// double-print #64 set out to fix. Emit here when nothing else
+		// did, so "exactly one line" holds without requiring every call
+		// site to remember the helper.
+		if globalJSON && !jsonErrorEmitted {
+			emitError(rootCmd.ErrOrStderr(), err)
+		}
 		osExit(1)
 	}
 }

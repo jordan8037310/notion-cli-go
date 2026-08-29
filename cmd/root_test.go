@@ -218,3 +218,63 @@ func TestTextMode_KeepsCobraErrorOutput(t *testing.T) {
 		t.Errorf("text mode should still print cobra's Error line; got %q", stderr.String())
 	}
 }
+
+// TestJSONMode_BareErrorStillEmitsEnvelope guards the regression the
+// adversarial review caught in the #64 fix. Silencing cobra in JSON mode
+// made every RunE that returns a bare error — rather than routing through
+// jsonErrorOr — exit 1 having written zero bytes to BOTH streams. That is
+// strictly worse than the double-print #64 set out to fix: the failure
+// became completely undiagnosable.
+//
+// `views create` is the canonical case: its validation errors return
+// directly. Execute() now emits the envelope as a backstop, so the
+// "exactly one line in JSON mode" contract holds without every call site
+// having to remember the helper.
+func TestJSONMode_BareErrorStillEmitsEnvelope(t *testing.T) {
+	withCmdEnv(t)
+	resetRootCmdArgs()
+	t.Cleanup(resetGlobalOutputFlags)
+
+	// views' flag vars are package-level and pflag keeps parsed values for
+	// the life of the process, so an earlier views test that passed --name
+	// would leave this validation satisfied and make the test vacuous.
+	viewsCreateName, viewsCreateType, viewsCreateConfigFile = "", "", ""
+	t.Cleanup(func() { viewsCreateName, viewsCreateType, viewsCreateConfigFile = "", "", "" })
+
+	// Drive Execute() (not rootCmd.Execute) so the backstop is exercised.
+	var stderr bytes.Buffer
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"views", "create", "11111111-1111-1111-1111-111111111111", "--json"})
+
+	exited := 0
+	prevExit := osExit
+	osExit = func(code int) { exited = code }
+	t.Cleanup(func() { osExit = prevExit })
+
+	Execute()
+
+	if exited != 1 {
+		t.Errorf("expected exit code 1 on a validation failure, got %d", exited)
+	}
+	out := strings.TrimSpace(stderr.String())
+	if out == "" {
+		t.Fatal("JSON mode emitted zero bytes for a bare RunE error — the failure is undiagnosable")
+	}
+	lines := []string{}
+	for _, l := range strings.Split(out, "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("want exactly 1 stderr line, got %d:\n%s", len(lines), out)
+	}
+	var env map[string]string
+	if err := json.Unmarshal([]byte(lines[0]), &env); err != nil {
+		t.Fatalf("stderr is not a JSON envelope: %v (%q)", err, lines[0])
+	}
+	if !strings.Contains(env["error"], "--name") {
+		t.Errorf("envelope should carry the real validation error, got %q", env["error"])
+	}
+}

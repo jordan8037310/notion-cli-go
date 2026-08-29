@@ -58,10 +58,16 @@ func emitJSON(w io.Writer, v interface{}) error {
 }
 
 // emitRaw writes an already-encoded JSON document to w, honouring
-// --pretty by re-indenting it. Used by the loss-free output paths (fetch,
-// blocks list) which hand back Notion's own response bytes rather than a
-// re-marshalled typed struct, so fields the CLI does not model survive the
-// round-trip. See issues #80 and #86.
+// --pretty by re-indenting it, so fields the CLI does not model survive
+// the round-trip (issue #80).
+//
+// Its only callers are emitPage and emitDatabase in cmd/fetch.go — a
+// single object per invocation. `blocks list --json` is the other
+// loss-free path but does NOT come through here: it holds a
+// []json.RawMessage and goes through emitList, which encodes each
+// RawMessage verbatim (issue #86). Same intent, different helper — a
+// change to the indent or newline handling here does not affect
+// `blocks list`.
 func emitRaw(w io.Writer, raw json.RawMessage) error {
 	if globalPretty {
 		var buf bytes.Buffer
@@ -141,7 +147,16 @@ func emitError(w io.Writer, err error) {
 	}
 	enc := json.NewEncoder(w)
 	_ = enc.Encode(map[string]string{"error": err.Error()})
+	jsonErrorEmitted = true
 }
+
+// jsonErrorEmitted records whether a JSON error envelope has already been
+// written for this invocation. Execute() consults it as a backstop: JSON
+// mode silences cobra's own error printing (#64), so a RunE that returns a
+// bare error without going through jsonErrorOr would otherwise exit 1
+// having written nothing at all. Reset by resetGlobalOutputFlags so the
+// in-process test binary stays hermetic.
+var jsonErrorEmitted bool
 
 // jsonErrorOr is the RunE error-wrap helper. Usage:
 //
@@ -234,6 +249,7 @@ func resetGlobalOutputFlags() {
 	globalOutput = ""
 	globalPage = ""
 	globalResolveMentions = false
+	jsonErrorEmitted = false
 	// Intentionally do NOT reset aliasStoreOverride here: test helpers
 	// install it via aliasTestEnv(t) and depend on it surviving the call
 	// to resetRootCmdArgs(). t.Cleanup restores the prior value at test
