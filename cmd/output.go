@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,6 +57,29 @@ func emitJSON(w io.Writer, v interface{}) error {
 	return nil
 }
 
+// emitRaw writes an already-encoded JSON document to w, honouring
+// --pretty by re-indenting it. Used by the loss-free output paths (fetch,
+// blocks list) which hand back Notion's own response bytes rather than a
+// re-marshalled typed struct, so fields the CLI does not model survive the
+// round-trip. See issues #80 and #86.
+func emitRaw(w io.Writer, raw json.RawMessage) error {
+	if globalPretty {
+		var buf bytes.Buffer
+		if err := json.Indent(&buf, raw, "", "  "); err != nil {
+			return fmt.Errorf("emit raw: %w", err)
+		}
+		raw = buf.Bytes()
+	}
+	if _, err := w.Write(raw); err != nil {
+		return fmt.Errorf("emit raw: %w", err)
+	}
+	_, err := io.WriteString(w, "\n")
+	if err != nil {
+		return fmt.Errorf("emit raw: %w", err)
+	}
+	return nil
+}
+
 // emitList is the canonical emitter for list commands (blocks list,
 // databases query, users list, teams list, comments list, list, search,
 // etc.). It picks the output shape based on globalPretty:
@@ -83,6 +107,15 @@ func emitList(w io.Writer, items interface{}) error {
 	if globalPretty {
 		// Single pretty-printed JSON array. emitJSON handles the indent
 		// and trailing newline.
+		//
+		// A nil slice encodes as `null`, not `[]` — so a successful but
+		// empty result set produced output no JSON array consumer could
+		// use (issue #72). Normalise here, at the single choke point
+		// every list command already funnels through, rather than
+		// auditing each paginator's zero-result return.
+		if rv.IsNil() {
+			return emitJSON(w, reflect.MakeSlice(rv.Type(), 0, 0).Interface())
+		}
 		return emitJSON(w, items)
 	}
 	// Compact NDJSON. Force the per-element encoder into compact mode by
@@ -191,6 +224,11 @@ func buildPageResolver(apiKey string) utils.PageTitleResolver {
 // state between runs. cobra retains bound flag values across the
 // process so this reset is required to keep tests hermetic.
 func resetGlobalOutputFlags() {
+	// The rootCmd PersistentPreRunE silences cobra's own error/usage
+	// printing in JSON mode (issue #64). Restore it here so a JSON-mode
+	// test cannot leave every later text-mode run silent.
+	rootCmd.SilenceErrors = false
+	rootCmd.SilenceUsage = false
 	globalJSON = false
 	globalPretty = false
 	globalOutput = ""

@@ -6,6 +6,7 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -448,6 +449,16 @@ func DeleteToDoBlock(notionAPIKey, pageID string, order int) error {
 // Deprecated: prefer BlockClient.GetAllBlocks.
 func GetAllBlocks(notionAPIKey, pageID string, filterType string) ([]Block, error) {
 	return defaultBlockClient(notionAPIKey).GetAllBlocks(defaultCtx(), pageID, filterType)
+}
+
+// GetAllBlocksRaw delegates to BlockClient.GetAllBlocksRaw on a default
+// client, returning the undecoded JSON of each block alongside the typed
+// slice so --json output can round-trip fields the Block struct does not
+// model.
+//
+// Deprecated: prefer BlockClient.GetAllBlocksRaw.
+func GetAllBlocksRaw(notionAPIKey, pageID string, filterType string) ([]Block, []json.RawMessage, error) {
+	return defaultBlockClient(notionAPIKey).GetAllBlocksRaw(defaultCtx(), pageID, filterType)
 }
 
 // FormatAllBlocks delegates to BlockClient.FormatAllBlocks on a default client.

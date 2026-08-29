@@ -6,6 +6,7 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -196,25 +197,36 @@ func findSchemaTitlePropertyKey(props map[string]interface{}) string {
 
 // Get retrieves a page by ID via GET /v1/pages/{id}.
 func (p *PageClient) Get(ctx context.Context, id string) (*Page, error) {
+	page, _, err := p.GetRaw(ctx, id)
+	return page, err
+}
+
+// GetRaw is Get that also returns the undecoded response body. The typed
+// Page models only the fields the CLI's human output needs, so `fetch
+// --json` emits these bytes instead — otherwise icon, cover, created_by,
+// last_edited_by and any newer top-level key are silently dropped on the
+// way out (issue #80).
+func (p *PageClient) GetRaw(ctx context.Context, id string) (*Page, json.RawMessage, error) {
 	if err := p.checkAuth(); err != nil {
-		return nil, fmt.Errorf("get page: %w", err)
+		return nil, nil, fmt.Errorf("get page: %w", err)
 	}
 	if id == "" {
-		return nil, fmt.Errorf("get page: id is required")
+		return nil, nil, fmt.Errorf("get page: id is required")
 	}
 	req, err := p.c.newRequest(ctx, http.MethodGet, "/pages/"+id, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	resp, err := p.c.do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get page: %w", err)
+		return nil, nil, fmt.Errorf("get page: %w", err)
 	}
 	var page Page
-	if err := decodeInto(resp, &page); err != nil {
-		return nil, fmt.Errorf("get page: %w", err)
+	raw, err := decodeIntoRaw(resp, &page)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get page: %w", err)
 	}
-	return &page, nil
+	return &page, raw, nil
 }
 
 // Create posts a new page to POST /v1/pages. The parent must be set.

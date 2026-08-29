@@ -83,11 +83,16 @@ var blocksListCmd = &cobra.Command{
 		// format timestamps for human output) and emit raw Notion block
 		// objects as NDJSON.
 		if globalJSON {
-			blocks, err := utils.GetAllBlocks(notionAPIKey, pageID, blockType)
+			// Emit Notion's own bytes, not a re-marshalled Block. The
+			// typed struct models only the block types the human path
+			// renders, so re-encoding it silently empties child_page,
+			// child_database, synced_block metadata and any newer shape
+			// — issue #86.
+			_, raws, err := utils.GetAllBlocksRaw(notionAPIKey, pageID, blockType)
 			if err != nil {
 				return jsonErrorOr(cmd, fmt.Errorf("blocks list: %w", err))
 			}
-			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), blocks))
+			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), raws))
 		}
 
 		localTimezone, err := utils.GetLocalTimeZone()

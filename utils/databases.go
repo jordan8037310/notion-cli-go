@@ -110,21 +110,29 @@ func titleRichText(title string) []map[string]interface{} {
 // fallback is the common path in current workspaces. Mirrors the same
 // dispatch logic in Query — see issue #48.
 func (d *DatabaseClient) Get(ctx context.Context, id string) (*Database, error) {
+	db, _, err := d.GetRaw(ctx, id)
+	return db, err
+}
+
+// GetRaw is Get that also returns the undecoded response body of whichever
+// surface answered, so `fetch --json` can emit exactly what Notion sent
+// rather than a re-marshalled Database (issue #80).
+func (d *DatabaseClient) GetRaw(ctx context.Context, id string) (*Database, json.RawMessage, error) {
 	if err := d.checkAuth(); err != nil {
-		return nil, fmt.Errorf("get database: %w", err)
+		return nil, nil, fmt.Errorf("get database: %w", err)
 	}
 	if id == "" {
-		return nil, fmt.Errorf("get database: id is required")
+		return nil, nil, fmt.Errorf("get database: id is required")
 	}
 
-	db, err := d.getOnce(ctx, "/databases/"+id)
+	db, raw, err := d.getOnceRaw(ctx, "/databases/"+id)
 	if err == nil {
-		return db, nil
+		return db, raw, nil
 	}
 	if !isQueryFallbackTrigger(err) {
-		return nil, err
+		return nil, nil, err
 	}
-	return d.getOnce(ctx, "/data_sources/"+id)
+	return d.getOnceRaw(ctx, "/data_sources/"+id)
 }
 
 // getOnce is the shared transport for both /databases/{id} and
@@ -132,19 +140,26 @@ func (d *DatabaseClient) Get(ctx context.Context, id string) (*Database, error) 
 // return a Database-like object with title/properties/parent/etc. —
 // so callers can decode either into the existing Database type.
 func (d *DatabaseClient) getOnce(ctx context.Context, path string) (*Database, error) {
+	db, _, err := d.getOnceRaw(ctx, path)
+	return db, err
+}
+
+// getOnceRaw is getOnce that also returns the undecoded response body.
+func (d *DatabaseClient) getOnceRaw(ctx context.Context, path string) (*Database, json.RawMessage, error) {
 	req, err := d.c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	resp, err := d.c.do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get database: %w", err)
+		return nil, nil, fmt.Errorf("get database: %w", err)
 	}
 	var db Database
-	if err := decodeInto(resp, &db); err != nil {
-		return nil, fmt.Errorf("get database: %w", err)
+	raw, err := decodeIntoRaw(resp, &db)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get database: %w", err)
 	}
-	return &db, nil
+	return &db, raw, nil
 }
 
 // Query performs a single query against a Notion queryable surface and

@@ -943,3 +943,75 @@ func TestFiles_AddFile_JSON_NameOverride(t *testing.T) {
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
 }
+
+// TestEmitList_NilSliceIsEmptyArray guards issue #72. A paginator that
+// returns zero results returns a nil slice, and encoding/json serializes
+// a nil slice as `null`, not `[]`. `databases query <empty> --json
+// --pretty` therefore emitted `null`, which every JSON array consumer
+// rejects. emitList normalises at the single choke point every list
+// command already funnels through.
+func TestEmitList_NilSliceIsEmptyArray(t *testing.T) {
+	t.Cleanup(resetGlobalOutputFlags)
+
+	tests := []struct {
+		name   string
+		items  interface{}
+		pretty bool
+		want   string
+	}{
+		{name: "nil typed slice pretty", items: []utils.Block(nil), pretty: true, want: "[]\n"},
+		{name: "nil map slice pretty", items: []map[string]string(nil), pretty: true, want: "[]\n"},
+		{name: "empty non-nil slice pretty", items: []utils.Block{}, pretty: true, want: "[]\n"},
+		// NDJSON mode emits nothing for an empty set, which is already
+		// the correct shape for a line-delimited stream.
+		{name: "nil typed slice ndjson", items: []utils.Block(nil), pretty: false, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetGlobalOutputFlags()
+			globalPretty = tt.pretty
+			var buf bytes.Buffer
+			if err := emitList(&buf, tt.items); err != nil {
+				t.Fatalf("emitList: %v", err)
+			}
+			if got := buf.String(); got != tt.want {
+				t.Errorf("emitList = %q, want %q", got, tt.want)
+			}
+			if strings.Contains(buf.String(), "null") {
+				t.Errorf("emitList emitted null for an empty result set: %q", buf.String())
+			}
+		})
+	}
+}
+
+// TestEmitRaw covers the loss-free output helper added for #80/#86: raw
+// bytes pass through verbatim in compact mode and are re-indented under
+// --pretty, always with exactly one trailing newline.
+func TestEmitRaw(t *testing.T) {
+	t.Cleanup(resetGlobalOutputFlags)
+	raw := json.RawMessage(`{"a":1,"b":{"c":2}}`)
+
+	resetGlobalOutputFlags()
+	var compact bytes.Buffer
+	if err := emitRaw(&compact, raw); err != nil {
+		t.Fatalf("emitRaw: %v", err)
+	}
+	if compact.String() != `{"a":1,"b":{"c":2}}`+"\n" {
+		t.Errorf("emitRaw compact = %q", compact.String())
+	}
+
+	resetGlobalOutputFlags()
+	globalPretty = true
+	var pretty bytes.Buffer
+	if err := emitRaw(&pretty, raw); err != nil {
+		t.Fatalf("emitRaw pretty: %v", err)
+	}
+	if !strings.Contains(pretty.String(), "\n  \"a\": 1") {
+		t.Errorf("emitRaw pretty did not indent: %q", pretty.String())
+	}
+	var round map[string]interface{}
+	if err := json.Unmarshal(pretty.Bytes(), &round); err != nil {
+		t.Errorf("emitRaw pretty output is not valid JSON: %v", err)
+	}
+}

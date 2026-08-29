@@ -6,6 +6,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -70,17 +71,17 @@ Examples:
 		// 404 fall through to /databases/{id}. Other errors (auth,
 		// transport) bubble up immediately because there is no point
 		// double-probing them.
-		page, pageErr := utils.NewPageClient(client).Get(ctx, id)
+		page, pageRaw, pageErr := utils.NewPageClient(client).GetRaw(ctx, id)
 		if pageErr == nil {
-			return emitPage(cmd, page)
+			return emitPage(cmd, page, pageRaw)
 		}
 		if !isNotFound(pageErr) {
 			return jsonErrorOr(cmd, fmt.Errorf("fetch: probe page: %w", pageErr))
 		}
 
-		db, dbErr := utils.NewDatabaseClient(client).Get(ctx, id)
+		db, dbRaw, dbErr := utils.NewDatabaseClient(client).GetRaw(ctx, id)
 		if dbErr == nil {
-			return emitDatabase(cmd, db)
+			return emitDatabase(cmd, db, dbRaw)
 		}
 		if !isNotFound(dbErr) {
 			return jsonErrorOr(cmd, fmt.Errorf("fetch: probe database: %w", dbErr))
@@ -93,8 +94,17 @@ Examples:
 // emitPage formats a page result for the current output mode. JSON paths
 // emit the raw object so the round-trip is loss-free; human paths print a
 // minimal type/id/title summary plus a follow-up command hint.
-func emitPage(cmd *cobra.Command, page *utils.Page) error {
+//
+// raw is the undecoded response body. Re-marshalling the typed Page here
+// dropped every top-level key the struct does not model — icon, cover,
+// created_by, last_edited_by — which contradicted this function's own
+// loss-free contract (issue #80). raw is nil only when a caller
+// constructed the Page by hand; fall back to the typed encode then.
+func emitPage(cmd *cobra.Command, page *utils.Page, raw json.RawMessage) error {
 	if globalJSON {
+		if len(raw) > 0 {
+			return jsonErrorOr(cmd, emitRaw(cmd.OutOrStdout(), raw))
+		}
 		return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), page))
 	}
 	w := cmd.OutOrStdout()
@@ -112,8 +122,12 @@ func emitPage(cmd *cobra.Command, page *utils.Page) error {
 }
 
 // emitDatabase formats a database result for the current output mode.
-func emitDatabase(cmd *cobra.Command, db *utils.Database) error {
+// See emitPage for why the JSON path emits raw bytes.
+func emitDatabase(cmd *cobra.Command, db *utils.Database, raw json.RawMessage) error {
 	if globalJSON {
+		if len(raw) > 0 {
+			return jsonErrorOr(cmd, emitRaw(cmd.OutOrStdout(), raw))
+		}
 		return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), db))
 	}
 	w := cmd.OutOrStdout()
