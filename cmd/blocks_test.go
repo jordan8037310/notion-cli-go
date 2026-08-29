@@ -786,10 +786,19 @@ func TestBlocksListTypeNotAliased(t *testing.T) {
 	}
 }
 
-// TestBlocksListUnfilteredReturnsAllTypes is the end-to-end guard for
-// issue #88: with no --type flag, `blocks list --json` must return every
-// block type on the page, not just paragraphs. The mixedPage fixture
-// carries a heading_1, a paragraph and a to_do.
+// TestBlocksListUnfilteredReturnsAllTypes asserts the behaviour issue #88
+// broke: with no --type filter, `blocks list --json` returns every block
+// type on the page. The mixedPage fixture carries a heading_1, a paragraph
+// and a to_do.
+//
+// Scope note — this is a behavioural test, NOT the regression guard for the
+// aliasing itself. It resets blocksListType before driving the command (it
+// has to, to be hermetic), and that reset erases the registration-time
+// default write that *is* the bug, so this test would pass against the
+// aliased code. The actual guards are TestBlocksListTypeNotAliased (the two
+// flags must not share storage) and TestBlocksListTypeDefaultAtInit (the
+// post-init snapshot in main_test.go). Do not delete those on the strength
+// of this one.
 func TestBlocksListUnfilteredReturnsAllTypes(t *testing.T) {
 	withCmdEnv(t)
 	// Target the mixed fixture through the env path; --page would send

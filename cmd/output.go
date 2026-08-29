@@ -196,6 +196,14 @@ func resetGlobalOutputFlags() {
 	globalOutput = ""
 	globalPage = ""
 	globalResolveMentions = false
+	// blocksListType backs `blocks list --type`. pflag keeps a parsed
+	// value in its bound variable for the life of the process, so a test
+	// that ran `blocks list --type X` leaves the filter set for every
+	// later test in the binary. Reset it centrally rather than in each
+	// test file: splitting this off `blockType` silently stopped the
+	// per-file `blockType = ""` resets from protecting the list path, and
+	// the breakage only surfaced once two branches were merged.
+	blocksListType = ""
 	// Intentionally do NOT reset aliasStoreOverride here: test helpers
 	// install it via aliasTestEnv(t) and depend on it surviving the call
 	// to resetRootCmdArgs(). t.Cleanup restores the prior value at test
