@@ -393,3 +393,86 @@ func TestBlockRichText_FormatAllBlocks_NoANSI(t *testing.T) {
 		t.Errorf("FormatAllBlocks line missing plain payload: %q", line)
 	}
 }
+
+// TestAddRichTextBlock_CodeLanguage guards issue #68: the rich-text-json
+// write path hardcoded "plain text" on code blocks, so `blocks add
+// --rich-text-json spec.json -t code --language go` silently produced a
+// plain-text code block. WithLanguage must flow through, and a caller
+// that supplies no language must still get Notion's "plain text" default.
+func TestAddRichTextBlock_CodeLanguage(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []BlockOption
+		want string
+	}{
+		{name: "explicit language", opts: []BlockOption{WithLanguage("go")}, want: "go"},
+		{name: "no option falls back", opts: nil, want: "plain text"},
+		{name: "empty language falls back", opts: []BlockOption{WithLanguage("")}, want: "plain text"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPatch && r.URL.Path == "/blocks/writePage/children" {
+					gotBody, _ = io.ReadAll(r.Body)
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("{}"))
+					return
+				}
+				http.Error(w, "not found", http.StatusNotFound)
+			}))
+			defer srv.Close()
+			prev := baseURL
+			SetBaseURL(srv.URL)
+			defer SetBaseURL(prev)
+
+			rt := []RichText{{Type: "text", Text: Text{Content: "fmt.Println(\"hi\")"}}}
+			if err := NewBlockClient(NewClient("k", WithBaseURL(srv.URL))).
+				AddRichTextBlock(context.Background(), "writePage", "code", rt, tt.opts...); err != nil {
+				t.Fatalf("AddRichTextBlock: %v", err)
+			}
+
+			var sent struct {
+				Children []struct {
+					Type string                 `json:"type"`
+					Code map[string]interface{} `json:"code"`
+				} `json:"children"`
+			}
+			if err := json.Unmarshal(gotBody, &sent); err != nil {
+				t.Fatalf("unmarshal outbound body: %v (body=%s)", err, gotBody)
+			}
+			if len(sent.Children) != 1 {
+				t.Fatalf("outbound children = %+v, want 1", sent.Children)
+			}
+			if got := sent.Children[0].Code["language"]; got != tt.want {
+				t.Errorf("code.language = %v, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAddRichTextBlock_NonCodeIgnoresLanguage confirms threading options
+// through the rich-text path did not start emitting a language key on
+// block types that have no such field.
+func TestAddRichTextBlock_NonCodeIgnoresLanguage(t *testing.T) {
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+	prev := baseURL
+	SetBaseURL(srv.URL)
+	defer SetBaseURL(prev)
+
+	rt := []RichText{{Type: "text", Text: Text{Content: "body"}}}
+	if err := NewBlockClient(NewClient("k", WithBaseURL(srv.URL))).
+		AddRichTextBlock(context.Background(), "writePage", "paragraph", rt, WithLanguage("go")); err != nil {
+		t.Fatalf("AddRichTextBlock: %v", err)
+	}
+	if strings.Contains(string(gotBody), "language") {
+		t.Errorf("paragraph payload leaked a language key: %s", gotBody)
+	}
+}
