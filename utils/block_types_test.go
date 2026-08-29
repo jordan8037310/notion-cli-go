@@ -6,12 +6,15 @@
 package utils
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/fatih/color"
 )
 
 // ---------- GetBlockContent coverage ----------
@@ -153,6 +156,42 @@ func TestBlockTypes_GetBlockContent(t *testing.T) {
 				},
 			},
 			want: "[ a |  | c ]",
+		},
+		{
+			// Issue #69: cells used to render cell[0].PlainText only, so
+			// every run past the first was silently dropped.
+			name: "table_row multi-run cells",
+			block: Block{
+				Type: "table_row",
+				TableRow: &TableRowBlock{
+					Cells: [][]RichText{
+						{{PlainText: "single"}},
+						{{PlainText: "a"}, {PlainText: "b"}, {PlainText: "c"}},
+						{{PlainText: "Project: "}, {PlainText: "Q2 Plan"}},
+					},
+				},
+			},
+			want: "[ single | abc | Project: Q2 Plan ]",
+		},
+		{
+			// Cells render through RenderRichText, so mention markers
+			// match every other block type's inline rich-text rendering.
+			// A plain concatenation would emit the mention's PlainText
+			// ("Roadmap"); only RenderRichText produces "[page:p-1]".
+			// Annotations render as ANSI attributes, which fatih/color
+			// suppresses under a non-TTY, so bold is bare here.
+			name: "table_row annotated and mention cells",
+			block: Block{
+				Type: "table_row",
+				TableRow: &TableRowBlock{
+					Cells: [][]RichText{
+						{{PlainText: "plain "}, {PlainText: "bold", Annotations: Annotation{Bold: true}}},
+						{{PlainText: "see "}, {Type: "mention", PlainText: "Roadmap",
+							Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-1"}}}},
+					},
+				},
+			},
+			want: "[ plain bold | see [page:p-1] ]",
 		},
 		{
 			name: "synced_block original",
@@ -760,4 +799,79 @@ func TestIsAddableBlockType(t *testing.T) {
 	if IsAddableBlockType("not_a_type") {
 		t.Error("unknown type should not be addable")
 	}
+}
+
+// TestTableRow_PlainPathIsANSIFree guards the regression the adversarial
+// review caught in the #69 fix. Routing table cells through RenderRichText
+// put annotation ANSI escapes on GetBlockContentPlain's output, whose godoc
+// promises an ANSI-free string precisely because FormatAllBlocks truncates
+// it with a 47-byte slice — a cut that lands mid-escape leaves the opening
+// code without its reset and the terminal stuck in that formatting.
+//
+// color.NoColor is forced false here to simulate an interactive terminal;
+// the test binary runs non-TTY, which is exactly why the original bug was
+// invisible to the suite.
+func TestTableRow_PlainPathIsANSIFree(t *testing.T) {
+	prev := color.NoColor
+	color.NoColor = false
+	defer func() { color.NoColor = prev }()
+
+	row := Block{
+		Type: "table_row",
+		TableRow: &TableRowBlock{
+			Cells: [][]RichText{
+				{{PlainText: "Quarterly revenue summary for the west region "},
+					{PlainText: "BOLDTAIL", Annotations: Annotation{Bold: true}}},
+			},
+		},
+	}
+
+	plain := GetBlockContentPlain(row)
+	if strings.Contains(plain, "\x1b") {
+		t.Errorf("GetBlockContentPlain leaked an ANSI escape into the truncation-safe path: %q", plain)
+	}
+	if !strings.Contains(plain, "BOLDTAIL") {
+		t.Errorf("plain path dropped a run: %q", plain)
+	}
+
+	// The ANSI path still annotates — the two renderers must stay distinct.
+	rendered := GetBlockContent(row)
+	if !strings.Contains(rendered, "\x1b") {
+		t.Errorf("GetBlockContent should still apply annotations to table cells: %q", rendered)
+	}
+}
+
+// TestTableRow_ResolverReachesCells guards the second half of that
+// regression: formatTableRow hardcoded RenderRichText, which pins
+// NoPageResolver, so --resolve-mentions silently did nothing inside tables
+// and a cell mention rendered as a bare [page:<uuid>].
+func TestTableRow_ResolverReachesCells(t *testing.T) {
+	row := Block{
+		Type: "table_row",
+		TableRow: &TableRowBlock{
+			Cells: [][]RichText{
+				{{Type: "mention", PlainText: "Roadmap",
+					Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-1"}}}},
+			},
+		},
+	}
+
+	// With a resolver, the cell mention expands to the page title.
+	got := GetBlockContentPlainWithResolver(context.Background(), row, stubResolver{title: "Roadmap Q3"})
+	if !strings.Contains(got, "Roadmap Q3") {
+		t.Errorf("resolver did not reach table cells; got %q", got)
+	}
+
+	// Without one, it falls back to the legacy marker.
+	fallback := GetBlockContentPlain(row)
+	if !strings.Contains(fallback, "[page:p-1]") {
+		t.Errorf("NoPageResolver should yield the legacy marker; got %q", fallback)
+	}
+}
+
+// stubResolver returns a fixed title for any page id.
+type stubResolver struct{ title string }
+
+func (s stubResolver) ResolvePageTitle(_ context.Context, _ string) (string, error) {
+	return s.title, nil
 }
