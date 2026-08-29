@@ -135,16 +135,13 @@ func (d *DatabaseClient) GetRaw(ctx context.Context, id string) (*Database, json
 	return d.getOnceRaw(ctx, "/data_sources/"+id)
 }
 
-// getOnce is the shared transport for both /databases/{id} and
+// getOnceRaw is the shared transport for both /databases/{id} and
 // /data_sources/{id}. The wire envelope is shape-compatible — both
 // return a Database-like object with title/properties/parent/etc. —
 // so callers can decode either into the existing Database type.
-func (d *DatabaseClient) getOnce(ctx context.Context, path string) (*Database, error) {
-	db, _, err := d.getOnceRaw(ctx, path)
-	return db, err
-}
-
-// getOnceRaw is getOnce that also returns the undecoded response body.
+//
+// It returns the undecoded response body alongside the typed Database so
+// the caller can emit a loss-free --json round-trip (issue #80).
 func (d *DatabaseClient) getOnceRaw(ctx context.Context, path string) (*Database, json.RawMessage, error) {
 	req, err := d.c.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
