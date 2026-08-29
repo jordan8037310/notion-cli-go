@@ -753,6 +753,87 @@ func TestBlocksList_RichTextJSON(t *testing.T) {
 	}
 }
 
+// TestBlocksListJSONLossless guards issue #86: `blocks list --json`
+// encoded the typed []utils.Block, which models only the block types the
+// human renderer knows. Anything else — child_database, synced_block
+// metadata, column/column_list, any newer shape — came out with an empty
+// payload object, contradicting the command's "emit raw Notion block
+// objects" godoc. The JSON path now emits Notion's own bytes.
+//
+// Both subtests pass --type explicitly. That keeps this test independent
+// of the `blocks list` type-filter defect (#88, fixed separately): a
+// parse-time --type assignment is honoured either way.
+func TestBlocksListJSONLossless(t *testing.T) {
+	// rawChildren serves a fixture whose blocks carry payloads and
+	// top-level keys the typed Block struct does not model.
+	rawChildren := func(t *testing.T) {
+		t.Helper()
+		srv := withCmdEnv(t)
+		t.Setenv("NOTION_PAGE_ID", "rawPage")
+		origHandler := srv.Config.Handler
+		srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/blocks/rawPage/children" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"object":"list","results":[
+					{"object":"block","id":"b1","type":"child_database",
+					 "has_children":false,"in_trash":false,
+					 "child_database":{"title":"Q2 Tracker"}},
+					{"object":"block","id":"b2","type":"paragraph",
+					 "has_children":false,
+					 "created_by":{"object":"user","id":"u-1"},
+					 "paragraph":{"rich_text":[{"type":"text","plain_text":"hi"}],"color":"blue"}}
+				],"has_more":false,"next_cursor":""}`))
+				return
+			}
+			origHandler.ServeHTTP(w, r)
+		})
+	}
+
+	run := func(t *testing.T, blockTypeArg string) map[string]interface{} {
+		t.Helper()
+		resetRootCmdArgs()
+		var out bytes.Buffer
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&out)
+		rootCmd.SetArgs([]string{"blocks", "list", "--json", "--type", blockTypeArg})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("rootCmd.Execute(blocks list --json --type %s): %v", blockTypeArg, err)
+		}
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if len(lines) != 1 {
+			t.Fatalf("want 1 NDJSON line for --type %s, got %d:\n%s", blockTypeArg, len(lines), out.String())
+		}
+		var got map[string]interface{}
+		if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
+			t.Fatalf("output is not JSON: %v (%s)", err, lines[0])
+		}
+		return got
+	}
+
+	t.Run("unmodeled block payload survives", func(t *testing.T) {
+		rawChildren(t)
+		got := run(t, "child_database")
+
+		cd, ok := got["child_database"].(map[string]interface{})
+		if !ok || cd["title"] != "Q2 Tracker" {
+			t.Errorf("child_database payload lost; got %v", got["child_database"])
+		}
+	})
+
+	t.Run("unmodeled top-level keys survive", func(t *testing.T) {
+		rawChildren(t)
+		got := run(t, "paragraph")
+
+		if _, ok := got["created_by"]; !ok {
+			t.Errorf("created_by dropped from raw block; got keys %v", mapKeys(got))
+		}
+		para, ok := got["paragraph"].(map[string]interface{})
+		if !ok || para["color"] != "blue" {
+			t.Errorf("paragraph.color dropped; got %v", got["paragraph"])
+		}
+	})
+}
+
 // TestBlocksListTypeNotAliased guards issue #88.
 //
 // pflag's StringVarP writes its default into the bound variable at

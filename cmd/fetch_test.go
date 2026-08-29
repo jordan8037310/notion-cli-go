@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +69,13 @@ func newFetchMock(t *testing.T) *fetchMock {
 				"last_edited_time": "2026-04-22T10:00:00.000Z",
 				"url":              "https://notion.so/" + id,
 				"parent":           map[string]interface{}{"type": "page_id", "page_id": "p"},
+				// Top-level keys the typed utils.Page does NOT model.
+				// They must still survive `fetch --json` — issue #80.
+				"icon":           map[string]interface{}{"type": "emoji", "emoji": "🚀"},
+				"cover":          map[string]interface{}{"type": "external", "external": map[string]interface{}{"url": "https://x/c.png"}},
+				"created_by":     map[string]interface{}{"object": "user", "id": "u-1"},
+				"last_edited_by": map[string]interface{}{"object": "user", "id": "u-2"},
+				"public_url":     "https://notion.site/" + id,
 				"properties": map[string]interface{}{
 					"Name": map[string]interface{}{
 						"title": []interface{}{
@@ -100,6 +108,10 @@ func newFetchMock(t *testing.T) *fetchMock {
 				},
 				"parent":     map[string]interface{}{"type": "page_id", "page_id": "p"},
 				"properties": map[string]interface{}{},
+				// Unmodeled on utils.Database — see issue #80.
+				"icon":        map[string]interface{}{"type": "emoji", "emoji": "📊"},
+				"description": []map[string]interface{}{{"plain_text": "desc"}},
+				"is_inline":   true,
 			})
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
@@ -352,4 +364,73 @@ func TestFetch_DatabasePlainTitle(t *testing.T) {
 	if got := databasePlainTitle(db); got != "Foo Bar" {
 		t.Errorf("databasePlainTitle = %q, want 'Foo Bar'", got)
 	}
+}
+
+// TestFetch_JSONLossless guards issue #80: `fetch --json` re-marshalled
+// the typed utils.Page / utils.Database, so every top-level key the
+// struct does not model — icon, cover, created_by, last_edited_by — was
+// silently dropped, contradicting the command's own "loss-free
+// round-trip" contract. The JSON path now emits Notion's own bytes.
+func TestFetch_JSONLossless(t *testing.T) {
+	t.Run("page", func(t *testing.T) {
+		m := withFetchEnv(t)
+		m.pageOK = true
+		resetRootCmdArgs()
+
+		var out bytes.Buffer
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&out)
+		rootCmd.SetArgs([]string{"fetch", "--json", fetchHexID})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+
+		var got map[string]interface{}
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("output is not valid JSON: %v\n%s", err, out.String())
+		}
+		for _, key := range []string{"icon", "cover", "created_by", "last_edited_by", "public_url"} {
+			if _, ok := got[key]; !ok {
+				t.Errorf("fetch --json dropped unmodeled top-level key %q; got keys %v", key, mapKeys(got))
+			}
+		}
+		// The modeled fields must still be there.
+		if got["object"] != "page" || got["id"] == nil {
+			t.Errorf("fetch --json lost a modeled field: %v", got)
+		}
+	})
+
+	t.Run("database", func(t *testing.T) {
+		m := withFetchEnv(t)
+		m.dbOK = true
+		resetRootCmdArgs()
+
+		var out bytes.Buffer
+		rootCmd.SetOut(&out)
+		rootCmd.SetErr(&out)
+		rootCmd.SetArgs([]string{"fetch", "--json", fetchHexID})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+
+		var got map[string]interface{}
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("output is not valid JSON: %v\n%s", err, out.String())
+		}
+		for _, key := range []string{"icon", "description", "is_inline"} {
+			if _, ok := got[key]; !ok {
+				t.Errorf("fetch --json dropped unmodeled database key %q; got keys %v", key, mapKeys(got))
+			}
+		}
+	})
+}
+
+// mapKeys returns m's keys, for readable assertion failures.
+func mapKeys(m map[string]interface{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

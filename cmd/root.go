@@ -40,12 +40,36 @@ var rootCmd = &cobra.Command{
 	// --output=text|json alias into the boolean flag and turns off ANSI
 	// color output whenever JSON is on so downstream commands that still
 	// call color.* cannot bleed escape codes into the JSON stream.
+	//
+	// In JSON mode it also silences cobra's own error/usage printing.
+	// jsonErrorOr already writes a one-line JSON error envelope to
+	// stderr; without this, cobra appended its plain-text "Error: ..."
+	// (and the usage block) to the same stream, so a JSON-mode failure
+	// emitted two outputs for one error and broke any consumer treating
+	// stderr as line-delimited JSON — issue #64.
+	//
+	// The flags go on the root command, not on the leaf being executed.
+	// (cmd.Root() rather than the rootCmd package var, which would be an
+	// initialization cycle inside its own literal.) Cobra
+	// checks both (`!cmd.SilenceErrors && !root.SilenceErrors`), so
+	// rootCmd alone is sufficient — and it leaves alone the commands
+	// that set these declaratively for their own reasons (searchCmd) or
+	// inside their RunE (the blocks subcommands). Mutating the leaf
+	// would also strand it silenced for the rest of the process, since
+	// nothing resets it.
+	//
+	// Text mode is untouched: cobra keeps printing "Error: ..." plus
+	// usage exactly as before. resetGlobalOutputFlags restores these so
+	// in-process reuse (tests) stays hermetic.
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if err := applyGlobalOutput(); err != nil {
 			return err
 		}
 		if globalJSON {
 			disableColor()
+			root := cmd.Root()
+			root.SilenceErrors = true
+			root.SilenceUsage = true
 		}
 		return nil
 	},
@@ -69,6 +93,18 @@ func Execute() {
 	}
 	err := rootCmd.Execute()
 	if err != nil {
+		// JSON mode silences cobra's own error printing (issue #64) so a
+		// failure emits exactly one line: jsonErrorOr's envelope. But not
+		// every RunE routes its error through jsonErrorOr — several
+		// validation paths (cmd/views.go among them) return a bare error.
+		// Without this backstop those failures printed nothing at all on
+		// either stream and exited 1, which is strictly worse than the
+		// double-print #64 set out to fix. Emit here when nothing else
+		// did, so "exactly one line" holds without requiring every call
+		// site to remember the helper.
+		if globalJSON && !jsonErrorEmitted {
+			emitError(rootCmd.ErrOrStderr(), err)
+		}
 		osExit(1)
 	}
 }

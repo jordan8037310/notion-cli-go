@@ -152,18 +152,33 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 // resp.Body. Returns an error if the status code is non-2xx or the payload
 // fails to decode.
 func decodeInto(resp *http.Response, target interface{}) error {
+	_, err := decodeIntoRaw(resp, target)
+	return err
+}
+
+// decodeIntoRaw is decodeInto that also hands back the undecoded response
+// body. Callers that must produce a loss-free --json round-trip emit these
+// bytes instead of re-marshalling the typed struct: any field Notion
+// returned that the struct does not model (icon, cover, created_by, newer
+// block shapes) survives only in the raw form. See issues #80 and #86.
+//
+// The returned slice is nil when target is nil or the body is empty.
+func decodeIntoRaw(resp *http.Response, target interface{}) (json.RawMessage, error) {
 	defer resp.Body.Close()
+	body, readErr := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("read response: %w", readErr)
 	}
 	if target == nil {
-		return nil
+		return nil, nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+	if err := json.Unmarshal(body, target); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	return nil
+	return json.RawMessage(body), nil
 }
 
 // expectStatus closes resp.Body and returns an error if the status code is

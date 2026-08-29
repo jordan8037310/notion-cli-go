@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -134,5 +135,146 @@ func TestExecuteErrorPath(t *testing.T) {
 	}
 	if code != 1 {
 		t.Errorf("Execute() osExit code = %d, want 1", code)
+	}
+}
+
+// TestJSONMode_SingleErrorLine guards issue #64. jsonErrorOr writes a
+// one-line JSON error envelope to stderr and then returns the error;
+// cobra's default handler also printed "Error: ..." plus the usage block
+// to the same stream, so a JSON-mode failure produced two outputs for one
+// error and broke any consumer treating stderr as line-delimited JSON.
+// PersistentPreRunE now silences cobra's own printing in JSON mode.
+//
+// `fetch` is the command under test on purpose: the blocks subcommands
+// already set SilenceErrors inside their own RunE, so they never
+// double-printed and would make this test vacuous.
+func TestJSONMode_SingleErrorLine(t *testing.T) {
+	m := withFetchEnv(t)
+	m.pageOK = false
+	m.dbOK = false
+	resetRootCmdArgs()
+	t.Cleanup(resetGlobalOutputFlags)
+
+	var stderr bytes.Buffer
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	// Both probes 404 → the dispatcher fails through jsonErrorOr.
+	rootCmd.SetArgs([]string{"fetch", "--json", fetchHexID})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected an error when neither page nor database resolves, got nil")
+	}
+
+	lines := []string{}
+	for _, l := range strings.Split(strings.TrimSpace(stderr.String()), "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("json mode emitted %d stderr lines, want exactly 1 (the JSON envelope):\n%s",
+			len(lines), stderr.String())
+	}
+	var env map[string]string
+	if err := json.Unmarshal([]byte(lines[0]), &env); err != nil {
+		t.Fatalf("stderr line is not a JSON error envelope: %v (%q)", err, lines[0])
+	}
+	if env["error"] == "" {
+		t.Errorf("JSON error envelope has no error field: %q", lines[0])
+	}
+	if strings.Contains(stderr.String(), "Usage:") {
+		t.Errorf("json mode leaked cobra's usage block: %q", stderr.String())
+	}
+}
+
+// TestTextMode_KeepsCobraErrorOutput is the counterpart: silencing is
+// scoped to JSON mode, so text-mode failures still print cobra's
+// human-readable "Error: ..." line. It also proves the JSON-mode
+// silencing does not leak across invocations — resetGlobalOutputFlags
+// restores the root command's flags.
+func TestTextMode_KeepsCobraErrorOutput(t *testing.T) {
+	m := withFetchEnv(t)
+	m.pageOK = false
+	m.dbOK = false
+
+	// Run once in JSON mode first, so a leaked silence flag would show up.
+	resetRootCmdArgs()
+	var discard bytes.Buffer
+	rootCmd.SetOut(&discard)
+	rootCmd.SetErr(&discard)
+	rootCmd.SetArgs([]string{"fetch", "--json", fetchHexID})
+	_ = rootCmd.Execute()
+
+	resetRootCmdArgs()
+	t.Cleanup(resetGlobalOutputFlags)
+	var stderr bytes.Buffer
+	rootCmd.SetOut(&stderr)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"fetch", fetchHexID})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected an error when neither page nor database resolves, got nil")
+	}
+	if !strings.Contains(stderr.String(), "Error:") {
+		t.Errorf("text mode should still print cobra's Error line; got %q", stderr.String())
+	}
+}
+
+// TestJSONMode_BareErrorStillEmitsEnvelope guards the regression the
+// adversarial review caught in the #64 fix. Silencing cobra in JSON mode
+// made every RunE that returns a bare error — rather than routing through
+// jsonErrorOr — exit 1 having written zero bytes to BOTH streams. That is
+// strictly worse than the double-print #64 set out to fix: the failure
+// became completely undiagnosable.
+//
+// `views create` is the canonical case: its validation errors return
+// directly. Execute() now emits the envelope as a backstop, so the
+// "exactly one line in JSON mode" contract holds without every call site
+// having to remember the helper.
+func TestJSONMode_BareErrorStillEmitsEnvelope(t *testing.T) {
+	withCmdEnv(t)
+	resetRootCmdArgs()
+	t.Cleanup(resetGlobalOutputFlags)
+
+	// views' flag vars are package-level and pflag keeps parsed values for
+	// the life of the process, so an earlier views test that passed --name
+	// would leave this validation satisfied and make the test vacuous.
+	viewsCreateName, viewsCreateType, viewsCreateConfigFile = "", "", ""
+	t.Cleanup(func() { viewsCreateName, viewsCreateType, viewsCreateConfigFile = "", "", "" })
+
+	// Drive Execute() (not rootCmd.Execute) so the backstop is exercised.
+	var stderr bytes.Buffer
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"views", "create", "11111111-1111-1111-1111-111111111111", "--json"})
+
+	exited := 0
+	prevExit := osExit
+	osExit = func(code int) { exited = code }
+	t.Cleanup(func() { osExit = prevExit })
+
+	Execute()
+
+	if exited != 1 {
+		t.Errorf("expected exit code 1 on a validation failure, got %d", exited)
+	}
+	out := strings.TrimSpace(stderr.String())
+	if out == "" {
+		t.Fatal("JSON mode emitted zero bytes for a bare RunE error — the failure is undiagnosable")
+	}
+	lines := []string{}
+	for _, l := range strings.Split(out, "\n") {
+		if strings.TrimSpace(l) != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 1 {
+		t.Fatalf("want exactly 1 stderr line, got %d:\n%s", len(lines), out)
+	}
+	var env map[string]string
+	if err := json.Unmarshal([]byte(lines[0]), &env); err != nil {
+		t.Fatalf("stderr is not a JSON envelope: %v (%q)", err, lines[0])
+	}
+	if !strings.Contains(env["error"], "--name") {
+		t.Errorf("envelope should carry the real validation error, got %q", env["error"])
 	}
 }

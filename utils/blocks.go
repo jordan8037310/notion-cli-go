@@ -6,6 +6,7 @@ package utils
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -257,7 +258,20 @@ func (b *BlockClient) DeleteToDoBlock(ctx context.Context, pageID string, order 
 // When filterType is non-empty, only blocks whose Type matches are
 // returned.
 func (b *BlockClient) GetAllBlocks(ctx context.Context, pageID, filterType string) ([]Block, error) {
+	blocks, _, err := b.GetAllBlocksRaw(ctx, pageID, filterType)
+	return blocks, err
+}
+
+// GetAllBlocksRaw is GetAllBlocks that also returns the undecoded JSON of
+// each block that survived the filter, in the same order as the typed
+// slice. `blocks list --json` emits these bytes rather than re-marshalling
+// the typed Block, whose struct models only the block types the CLI
+// renders — child_page, child_database, synced_block metadata, column /
+// column_list and any newer shape are otherwise silently emptied on the
+// way out (issue #86).
+func (b *BlockClient) GetAllBlocksRaw(ctx context.Context, pageID, filterType string) ([]Block, []json.RawMessage, error) {
 	var result []Block
+	var raws []json.RawMessage
 	var cursor string
 
 	for {
@@ -274,22 +288,38 @@ func (b *BlockClient) GetAllBlocks(ctx context.Context, pageID, filterType strin
 		}
 		req, err := b.c.newRequest(ctx, http.MethodGet, path, nil)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		resp, err := b.c.do(req)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		// Decode twice off one body: once into the typed BlockList the
+		// human path renders from, once into a results array of raw
+		// messages so the --json path can hand back Notion's own bytes.
 		var blockList BlockList
-		if err := decodeInto(resp, &blockList); err != nil {
-			return nil, err
+		body, err := decodeIntoRaw(resp, &blockList)
+		if err != nil {
+			return nil, nil, err
 		}
-		for _, block := range blockList.Results {
+		var rawList struct {
+			Results []json.RawMessage `json:"results"`
+		}
+		if err := json.Unmarshal(body, &rawList); err != nil {
+			return nil, nil, fmt.Errorf("decode block results: %w", err)
+		}
+		for i, block := range blockList.Results {
 			if block.Object != "block" {
 				continue
 			}
 			if filterType == "" || block.Type == filterType {
 				result = append(result, block)
+				// rawList.Results is decoded from the same body, so the
+				// indices line up; guard anyway rather than panic on a
+				// malformed payload.
+				if i < len(rawList.Results) {
+					raws = append(raws, rawList.Results[i])
+				}
 			}
 		}
 		if !blockList.HasMore || blockList.NextCursor == "" {
@@ -297,7 +327,7 @@ func (b *BlockClient) GetAllBlocks(ctx context.Context, pageID, filterType strin
 		}
 		cursor = blockList.NextCursor
 	}
-	return result, nil
+	return result, raws, nil
 }
 
 // FormatAllBlocks returns human-readable lines plus a by-type count for

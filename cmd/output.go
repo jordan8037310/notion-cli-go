@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -56,6 +57,35 @@ func emitJSON(w io.Writer, v interface{}) error {
 	return nil
 }
 
+// emitRaw writes an already-encoded JSON document to w, honouring
+// --pretty by re-indenting it, so fields the CLI does not model survive
+// the round-trip (issue #80).
+//
+// Its only callers are emitPage and emitDatabase in cmd/fetch.go — a
+// single object per invocation. `blocks list --json` is the other
+// loss-free path but does NOT come through here: it holds a
+// []json.RawMessage and goes through emitList, which encodes each
+// RawMessage verbatim (issue #86). Same intent, different helper — a
+// change to the indent or newline handling here does not affect
+// `blocks list`.
+func emitRaw(w io.Writer, raw json.RawMessage) error {
+	if globalPretty {
+		var buf bytes.Buffer
+		if err := json.Indent(&buf, raw, "", "  "); err != nil {
+			return fmt.Errorf("emit raw: %w", err)
+		}
+		raw = buf.Bytes()
+	}
+	if _, err := w.Write(raw); err != nil {
+		return fmt.Errorf("emit raw: %w", err)
+	}
+	_, err := io.WriteString(w, "\n")
+	if err != nil {
+		return fmt.Errorf("emit raw: %w", err)
+	}
+	return nil
+}
+
 // emitList is the canonical emitter for list commands (blocks list,
 // databases query, users list, teams list, comments list, list, search,
 // etc.). It picks the output shape based on globalPretty:
@@ -83,6 +113,15 @@ func emitList(w io.Writer, items interface{}) error {
 	if globalPretty {
 		// Single pretty-printed JSON array. emitJSON handles the indent
 		// and trailing newline.
+		//
+		// A nil slice encodes as `null`, not `[]` — so a successful but
+		// empty result set produced output no JSON array consumer could
+		// use (issue #72). Normalise here, at the single choke point
+		// every list command already funnels through, rather than
+		// auditing each paginator's zero-result return.
+		if rv.IsNil() {
+			return emitJSON(w, reflect.MakeSlice(rv.Type(), 0, 0).Interface())
+		}
 		return emitJSON(w, items)
 	}
 	// Compact NDJSON. Force the per-element encoder into compact mode by
@@ -108,7 +147,16 @@ func emitError(w io.Writer, err error) {
 	}
 	enc := json.NewEncoder(w)
 	_ = enc.Encode(map[string]string{"error": err.Error()})
+	jsonErrorEmitted = true
 }
+
+// jsonErrorEmitted records whether a JSON error envelope has already been
+// written for this invocation. Execute() consults it as a backstop: JSON
+// mode silences cobra's own error printing (#64), so a RunE that returns a
+// bare error without going through jsonErrorOr would otherwise exit 1
+// having written nothing at all. Reset by resetGlobalOutputFlags so the
+// in-process test binary stays hermetic.
+var jsonErrorEmitted bool
 
 // jsonErrorOr is the RunE error-wrap helper. Usage:
 //
@@ -191,11 +239,17 @@ func buildPageResolver(apiKey string) utils.PageTitleResolver {
 // state between runs. cobra retains bound flag values across the
 // process so this reset is required to keep tests hermetic.
 func resetGlobalOutputFlags() {
+	// The rootCmd PersistentPreRunE silences cobra's own error/usage
+	// printing in JSON mode (issue #64). Restore it here so a JSON-mode
+	// test cannot leave every later text-mode run silent.
+	rootCmd.SilenceErrors = false
+	rootCmd.SilenceUsage = false
 	globalJSON = false
 	globalPretty = false
 	globalOutput = ""
 	globalPage = ""
 	globalResolveMentions = false
+	jsonErrorEmitted = false
 	// blocksListType backs `blocks list --type`. pflag keeps a parsed
 	// value in its bound variable for the life of the process, so a test
 	// that ran `blocks list --type X` leaves the filter set for every
