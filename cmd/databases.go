@@ -20,6 +20,7 @@ import (
 // Flag vars for the databases subcommands. Keeping them package-level mirrors
 // pages.go's pattern and lets cobra bind them via init().
 var (
+	dbQueryDataSource string
 	dbQueryFilterJSON string
 	dbQuerySortJSON   string
 	dbQueryLimit      int
@@ -138,7 +139,15 @@ var databasesQueryCmd = &cobra.Command{
 		if err != nil {
 			return jsonErrorOr(cmd, err)
 		}
-		results, err := dc.QueryAll(context.Background(), args[0], filter, sort, dbQueryLimit)
+		// --data-source names the data source explicitly, skipping the
+		// probe entirely. A database id is a *container* and cannot be
+		// queried; on a multi-source database this flag is the only way
+		// to say which source you mean (issue #94).
+		target := args[0]
+		if dbQueryDataSource != "" {
+			target = dbQueryDataSource
+		}
+		results, err := dc.QueryAll(context.Background(), target, filter, sort, dbQueryLimit)
 		if err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("query database: %w", err))
 		}
@@ -148,6 +157,55 @@ var databasesQueryCmd = &cobra.Command{
 			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), results))
 		}
 		printQueryResults(cmd.OutOrStdout(), results)
+		return nil
+	},
+}
+
+// databasesDataSourcesCmd lists the data sources contained in a database.
+//
+// This is the documented way to obtain a data_source_id: Notion's own
+// answer to "where do I find one" is to retrieve the parent database and
+// read its data_sources array. Without this command the CLI could tell a
+// user their id was not queryable and offer no route to the id that is
+// (issue #94).
+var databasesDataSourcesCmd = &cobra.Command{
+	Use:   "data-sources <database-id>",
+	Short: "List the data sources contained in a database",
+	Long: `List the data sources contained in a database.
+
+Since Notion-Version 2025-09-03 a database is a container for one or more
+data sources, and it is the data source — not the database — that holds the
+schema and answers queries. Use this to find the id to pass to
+` + "`databases query`" + ` (or to its --data-source flag).`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		dc, err := newDatabaseClient()
+		if err != nil {
+			return jsonErrorOr(cmd, err)
+		}
+		db, err := dc.Get(context.Background(), args[0])
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("databases data-sources: %w", err))
+		}
+		if globalJSON {
+			// emitList normalises a nil slice to [] so a database with
+			// no data sources is still a valid JSON array (issue #72).
+			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), db.DataSources))
+		}
+		w := cmd.OutOrStdout()
+		if len(db.DataSources) == 0 {
+			color.Yellow("No data sources returned for %s.", args[0])
+			fmt.Fprintln(w, "  If this id is itself a data source, query it directly.")
+			return nil
+		}
+		for _, ds := range db.DataSources {
+			name := ds.Name
+			if name == "" {
+				name = "(unnamed)"
+			}
+			fmt.Fprintf(w, "%s  %s\n", ds.ID, name)
+		}
+		color.Cyan("  %d data source(s)", len(db.DataSources))
 		return nil
 	},
 }
@@ -266,6 +324,7 @@ func printQueryResults(w io.Writer, pages []utils.Page) {
 // resetDatabasesFlags wipes the package-level flag vars between tests. cobra
 // persists bound flag values across executions.
 func resetDatabasesFlags() {
+	dbQueryDataSource = ""
 	dbQueryFilterJSON = ""
 	dbQuerySortJSON = ""
 	dbQueryLimit = 0
@@ -280,9 +339,11 @@ func init() {
 	rootCmd.AddCommand(databasesCmd)
 	databasesCmd.AddCommand(databasesGetCmd)
 	databasesCmd.AddCommand(databasesQueryCmd)
+	databasesCmd.AddCommand(databasesDataSourcesCmd)
 	databasesCmd.AddCommand(databasesCreateCmd)
 	databasesCmd.AddCommand(databasesUpdateCmd)
 
+	databasesQueryCmd.Flags().StringVar(&dbQueryDataSource, "data-source", "", "Query this data source id directly (see `databases data-sources`); overrides the positional id")
 	databasesQueryCmd.Flags().StringVar(&dbQueryFilterJSON, "filter-json", "", "Path to a JSON file with the Notion filter object")
 	databasesQueryCmd.Flags().StringVar(&dbQuerySortJSON, "sort-json", "", "Path to a JSON file with the Notion sorts array")
 	databasesQueryCmd.Flags().IntVar(&dbQueryLimit, "limit", 0, "Maximum total results to return (0 = all)")
