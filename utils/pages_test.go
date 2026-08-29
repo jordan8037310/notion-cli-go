@@ -846,3 +846,64 @@ func TestExtractTitle(t *testing.T) {
 		})
 	}
 }
+
+// TestPageClient_SetIconCover covers the icon/cover PATCH added for #82,
+// including the guards that keep a malformed call off the wire.
+func TestPageClient_SetIconCover(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	pc := NewPageClient(NewClient("k", WithBaseURL(srv.URL)))
+	ref := &FileRef{ID: "file-123", Type: FileRefTypeFileUpload}
+
+	for _, tt := range []struct {
+		field string
+		call  func() error
+	}{
+		{"icon", func() error { return pc.SetIcon(context.Background(), "page-1", ref) }},
+		{"cover", func() error { return pc.SetCover(context.Background(), "page-1", ref) }},
+	} {
+		t.Run(tt.field, func(t *testing.T) {
+			if err := tt.call(); err != nil {
+				t.Fatalf("Set%s: %v", tt.field, err)
+			}
+			if gotMethod != http.MethodPatch || gotPath != "/pages/page-1" {
+				t.Errorf("request = %s %s, want PATCH /pages/page-1", gotMethod, gotPath)
+			}
+			var body map[string]interface{}
+			if err := json.Unmarshal(gotBody, &body); err != nil {
+				t.Fatalf("body not JSON: %v (%s)", err, gotBody)
+			}
+			f, ok := body[tt.field].(map[string]interface{})
+			if !ok {
+				t.Fatalf("body missing %q: %s", tt.field, gotBody)
+			}
+			if f["type"] != "file_upload" {
+				t.Errorf("%s.type = %v, want file_upload", tt.field, f["type"])
+			}
+			fu, ok := f["file_upload"].(map[string]interface{})
+			if !ok || fu["id"] != "file-123" {
+				t.Errorf("%s.file_upload = %v", tt.field, f["file_upload"])
+			}
+		})
+	}
+
+	t.Run("guards", func(t *testing.T) {
+		if err := pc.SetIcon(context.Background(), "", ref); err == nil {
+			t.Error("empty page id: want error, got nil")
+		}
+		if err := pc.SetIcon(context.Background(), "p", nil); err == nil {
+			t.Error("nil ref: want error, got nil")
+		}
+		if err := pc.SetIcon(context.Background(), "p", &FileRef{}); err == nil {
+			t.Error("ref with empty id: want error, got nil")
+		}
+	})
+}

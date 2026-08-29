@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -121,9 +122,10 @@ func TestBlocksListDispatch(t *testing.T) {
 		origHandler.ServeHTTP(w, r)
 	})
 
-	// Reset any --type filter that a previous test may have set. blockType
-	// is a package-level variable; a stale "to_do" here would narrow results.
-	blockType = ""
+	// Reset any --type filter that a previous test may have set.
+	// blocksListType is a package-level variable; a stale "to_do" here
+	// would narrow results.
+	blocksListType = ""
 
 	resetRootCmdArgs()
 	var out bytes.Buffer
@@ -830,4 +832,87 @@ func TestBlocksListJSONLossless(t *testing.T) {
 			t.Errorf("paragraph.color dropped; got %v", got["paragraph"])
 		}
 	})
+}
+
+// TestBlocksListTypeNotAliased guards issue #88.
+//
+// pflag's StringVarP writes its default into the bound variable at
+// *registration* time, not at parse time. `blocks list --type` and
+// `blocks add --type` used to share one package-level var, and add
+// registers second — so add's "paragraph" default clobbered list's "",
+// and every `blocks list` silently filtered down to paragraphs.
+//
+// The pre-existing test asserted on pflag.Flag.DefValue, which is a
+// separate string field on the flag object and stays "" regardless of
+// the aliasing. That is why the bug shipped green.
+//
+// pflag's stringValue is `type stringValue string` and newStringValue
+// returns (*stringValue)(p) — so a flag's Value pointer *is* the address
+// of the bound variable. Comparing the two pointers is therefore an exact
+// aliasing check, and unlike an assertion on the variable's current value
+// it does not depend on test execution order.
+func TestBlocksListTypeNotAliased(t *testing.T) {
+	listFlag := blocksListCmd.Flags().Lookup("type")
+	addFlag := blocksAddCmd.Flags().Lookup("type")
+	if listFlag == nil || addFlag == nil {
+		t.Fatal("blocks list/add: --type flag not registered")
+	}
+
+	listPtr := reflect.ValueOf(listFlag.Value).Pointer()
+	addPtr := reflect.ValueOf(addFlag.Value).Pointer()
+	if listPtr == addPtr {
+		t.Fatalf("blocks list --type and blocks add --type share backing storage (0x%x); "+
+			"list would inherit add's %q default and silently filter every listing",
+			listPtr, addFlag.DefValue)
+	}
+}
+
+// TestBlocksListUnfilteredReturnsAllTypes asserts the behaviour issue #88
+// broke: with no --type filter, `blocks list --json` returns every block
+// type on the page. The mixedPage fixture carries a heading_1, a paragraph
+// and a to_do.
+//
+// Scope note — this is a behavioural test, NOT the regression guard for the
+// aliasing itself. It resets blocksListType before driving the command (it
+// has to, to be hermetic), and that reset erases the registration-time
+// default write that *is* the bug, so this test would pass against the
+// aliased code. The actual guards are TestBlocksListTypeNotAliased (the two
+// flags must not share storage) and TestBlocksListTypeDefaultAtInit (the
+// post-init snapshot in main_test.go). Do not delete those on the strength
+// of this one.
+func TestBlocksListUnfilteredReturnsAllTypes(t *testing.T) {
+	withCmdEnv(t)
+	// Target the mixed fixture through the env path; --page would send
+	// "mixedPage" through alias resolution, which wants a uuid.
+	t.Setenv("NOTION_PAGE_ID", "mixedPage")
+
+	blocksListType = ""
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"blocks", "list", "--json"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("rootCmd.Execute(blocks list --json): %v", err)
+	}
+
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var b struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal([]byte(line), &b); err != nil {
+			t.Fatalf("blocks list --json emitted a non-JSON line %q: %v", line, err)
+		}
+		seen[b.Type] = true
+	}
+
+	for _, want := range []string{"heading_1", "paragraph", "to_do"} {
+		if !seen[want] {
+			t.Errorf("blocks list (no --type) did not return a %s block; got types %v", want, seen)
+		}
+	}
 }

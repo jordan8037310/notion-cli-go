@@ -105,57 +105,77 @@ returns the file id and name only.`,
 	},
 }
 
-// pagesSetIconCmd uploads an image and prints the resulting FileRef.
-// PATCHing the uploaded file as the page's icon is deferred to a
-// follow-up — this command uploads only and returns the FileRef.
+// setPageImage is the shared body of `pages set-icon` and
+// `pages set-cover`. field is "icon" or "cover".
+//
+// Order matters: the page is fetched BEFORE the upload. Both commands
+// used to upload first and print a success line naming the page without
+// ever contacting it, so a typo'd or unshared page id exited 0 having
+// done nothing to that page (issue #82). Validating first also avoids
+// leaving an orphaned file upload behind when the id is wrong.
+func setPageImage(cmd *cobra.Command, field, pageID, path string) error {
+	apiKey, _ := utils.SetAPIConfig()
+	if apiKey == "" {
+		return jsonErrorOr(cmd, fmt.Errorf("set-%s: %w", field, utils.ErrMissingAPIKey))
+	}
+	client := utils.NewClient(apiKey, utils.WithBaseURL(utils.GetBaseURL()))
+	pc := utils.NewPageClient(client)
+	ctx := context.Background()
+
+	if _, err := pc.Get(ctx, pageID); err != nil {
+		return jsonErrorOr(cmd, fmt.Errorf("set-%s: page %s: %w", field, pageID, err))
+	}
+
+	ref, err := utils.NewFileClient(client).Upload(ctx, path)
+	if err != nil {
+		return jsonErrorOr(cmd, fmt.Errorf("set-%s: %w", field, err))
+	}
+
+	set := pc.SetIcon
+	if field == "cover" {
+		set = pc.SetCover
+	}
+	if err := set(ctx, pageID, ref); err != nil {
+		return jsonErrorOr(cmd, fmt.Errorf("set-%s: %w", field, err))
+	}
+
+	if globalJSON {
+		return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), map[string]interface{}{
+			"ok":      true,
+			"page_id": pageID,
+			"field":   field,
+			"ref":     ref,
+		}))
+	}
+	color.Green("Set %s on page %s (file id=%s)", field, pageID, ref.ID)
+	return nil
+}
+
+// pagesSetIconCmd uploads a local image and sets it as the page's icon.
 var pagesSetIconCmd = &cobra.Command{
 	Use:   "set-icon <page-id> <path>",
-	Short: "Upload an image (page icon PATCH is deferred)",
-	Long: `Upload a local image to Notion and print the resulting FileRef.
-PATCHing the icon onto the page is deferred to a follow-up; this
-command currently returns the file id only.`,
+	Short: "Upload a local image and set it as the page icon",
+	Long: `Upload a local image to Notion and set it as the page's icon.
+
+The page id is verified before the upload, so a bad or unshared id
+fails with the API's own error instead of silently succeeding.`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fc, err := newFileClient()
-		if err != nil {
-			return jsonErrorOr(cmd, err)
-		}
-		ref, err := fc.Upload(context.Background(), args[1])
-		if err != nil {
-			return jsonErrorOr(cmd, fmt.Errorf("set-icon: %w", err))
-		}
-		if globalJSON {
-			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), ref))
-		}
-		color.Green("Uploaded icon for page %s (file id=%s) — icon PATCH deferred", args[0], ref.ID)
-		return nil
+		return setPageImage(cmd, "icon", args[0], args[1])
 	},
 }
 
-// pagesSetCoverCmd uploads an image and prints the resulting FileRef.
-// PATCHing the uploaded file as the page's cover is deferred to a
-// follow-up — this command uploads only and returns the FileRef.
+// pagesSetCoverCmd uploads a local image and sets it as the page's cover.
 var pagesSetCoverCmd = &cobra.Command{
 	Use:   "set-cover <page-id> <path>",
-	Short: "Upload an image (page cover PATCH is deferred)",
-	Long: `Upload a local image to Notion and print the resulting FileRef.
-PATCHing the cover onto the page is deferred to a follow-up; this
-command currently returns the file id only.`,
+	Short: "Upload a local image and set it as the page cover",
+	Long: `Upload a local image to Notion and set it as the page's cover.
+
+The page id is verified before the upload, so a bad or unshared id
+fails with the API's own error instead of silently succeeding.`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fc, err := newFileClient()
-		if err != nil {
-			return jsonErrorOr(cmd, err)
-		}
-		ref, err := fc.Upload(context.Background(), args[1])
-		if err != nil {
-			return jsonErrorOr(cmd, fmt.Errorf("set-cover: %w", err))
-		}
-		if globalJSON {
-			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), ref))
-		}
-		color.Green("Uploaded cover for page %s (file id=%s) — cover PATCH deferred", args[0], ref.ID)
-		return nil
+		return setPageImage(cmd, "cover", args[0], args[1])
 	},
 }
 

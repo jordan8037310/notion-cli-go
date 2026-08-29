@@ -18,11 +18,21 @@ import (
 )
 
 var (
-	blockType     string
-	blockURL      string
-	blockCaption  string
-	blockFileID   string
-	blockLanguage string
+	// blockType backs --type on `blocks add` only. It MUST NOT be shared
+	// with any other command's flag: StringVarP writes its default into
+	// the bound variable at *registration* time, not at parse time, so a
+	// second registration silently overwrites the first command's zero
+	// value. That is issue #88 — `blocks list` inherited add's
+	// "paragraph" default and filtered every listing down to paragraphs
+	// with no error.
+	blockType string
+	// blocksListType backs --type on `blocks list`. Separate storage from
+	// blockType by design; see the note above.
+	blocksListType string
+	blockURL       string
+	blockCaption   string
+	blockFileID    string
+	blockLanguage  string
 	// blocksAddRichTextJSON backs the --rich-text-json flag on
 	// `blocks add`. When non-empty, the command reads the file, parses
 	// it via utils.ParseRichTextJSON, and dispatches through
@@ -88,7 +98,10 @@ var blocksListCmd = &cobra.Command{
 			// renders, so re-encoding it silently empties child_page,
 			// child_database, synced_block metadata and any newer shape
 			// — issue #86.
-			_, raws, err := utils.GetAllBlocksRaw(notionAPIKey, pageID, blockType)
+			//
+			// blocksListType (not blockType) is the list command's own
+			// filter variable — see issue #88.
+			_, raws, err := utils.GetAllBlocksRaw(notionAPIKey, pageID, blocksListType)
 			if err != nil {
 				return jsonErrorOr(cmd, fmt.Errorf("blocks list: %w", err))
 			}
@@ -111,7 +124,7 @@ var blocksListCmd = &cobra.Command{
 			notionAPIKey,
 			pageID,
 			localTimezone,
-			blockType,
+			blocksListType,
 			resolver,
 		)
 		if err != nil {
@@ -121,8 +134,8 @@ var blocksListCmd = &cobra.Command{
 		}
 
 		if len(formatted) == 0 {
-			if blockType != "" {
-				color.Yellow("No blocks of type '%s' found.", blockType)
+			if blocksListType != "" {
+				color.Yellow("No blocks of type '%s' found.", blocksListType)
 			} else {
 				color.Yellow("No blocks found on this page.")
 			}
@@ -254,7 +267,7 @@ Examples:
 				color.Red("Error: %v", wrapped)
 				return wrapped
 			}
-			if err := utils.AddRichTextBlock(notionAPIKey, pageID, blockType, rt); err != nil {
+			if err := utils.AddRichTextBlock(notionAPIKey, pageID, blockType, rt, blocksAddOptions()...); err != nil {
 				wrapped := fmt.Errorf("blocks add: %w", err)
 				if globalJSON {
 					return jsonErrorOr(cmd, wrapped)
@@ -394,7 +407,7 @@ func init() {
 	blocksCmd.AddCommand(blocksDeleteCmd)
 
 	// Flags for list command
-	blocksListCmd.Flags().StringVarP(&blockType, "type", "t", "", "Filter by block type")
+	blocksListCmd.Flags().StringVarP(&blocksListType, "type", "t", "", "Filter by block type")
 
 	// Flags for add command
 	blocksAddCmd.Flags().StringVarP(&blockType, "type", "t", "paragraph", "Block type to add")

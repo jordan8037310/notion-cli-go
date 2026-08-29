@@ -504,8 +504,8 @@ func AddBlock(notionAPIKey, pageID, blockType, text string, opts ...BlockOption)
 // level delegates in this file (AddBlock, GetBlocks, ...). All of them are
 // on a migration path toward the *BlockClient method form; prefer
 // BlockClient.AddRichTextBlock in new code.
-func AddRichTextBlock(notionAPIKey, pageID, blockType string, rt []RichText) error {
-	return defaultBlockClient(notionAPIKey).AddRichTextBlock(defaultCtx(), pageID, blockType, rt)
+func AddRichTextBlock(notionAPIKey, pageID, blockType string, rt []RichText, opts ...BlockOption) error {
+	return defaultBlockClient(notionAPIKey).AddRichTextBlock(defaultCtx(), pageID, blockType, rt, opts...)
 }
 
 // DeleteBlock delegates to BlockClient.DeleteBlock on a default client.
@@ -576,7 +576,17 @@ func blockRichText(block Block) []RichText {
 // "" to signal "not one of these types; use blockRichText instead" — callers
 // must distinguish this from the genuine empty-string cases (column_list,
 // column) by checking block.Type first.
-func extendedBlockContent(block Block) (string, bool) {
+//
+// renderCell renders a table_row's cells. It MUST be supplied by the caller
+// rather than hardcoded, because this function sits on both the ANSI path
+// (GetBlockContentWithResolver) and the deliberately ANSI-free one
+// (GetBlockContentPlainWithResolver, whose output FormatAllBlocks
+// byte-slices at 47 bytes). Rendering cells with the annotating renderer on
+// the plain path would emit an escape sequence that the truncation can cut
+// mid-code, leaving the terminal stuck in the cell's formatting. Passing the
+// resolver through the closure also keeps --resolve-mentions working inside
+// table cells.
+func extendedBlockContent(block Block, renderCell func([]RichText) string) (string, bool) {
 	switch block.Type {
 	case "image":
 		return mediaBlockContent(block.Image), true
@@ -618,7 +628,7 @@ func extendedBlockContent(block Block) (string, bool) {
 		return "(empty)", true
 	case "table_row":
 		if block.TableRow != nil {
-			return formatTableRow(block.TableRow), true
+			return formatTableRow(block.TableRow, renderCell), true
 		}
 		return "(empty)", true
 	case "synced_block":
@@ -658,7 +668,12 @@ func GetBlockContentWithResolver(ctx context.Context, block Block, resolver Page
 	if block.Type == "divider" {
 		return "───────────"
 	}
-	if s, ok := extendedBlockContent(block); ok {
+	// Table cells render with the same annotating renderer this function
+	// uses for every other block type, and with the caller's resolver.
+	renderCell := func(cell []RichText) string {
+		return RenderRichTextWithResolver(ctx, cell, resolver)
+	}
+	if s, ok := extendedBlockContent(block, renderCell); ok {
 		return s
 	}
 	rt := blockRichText(block)
@@ -688,7 +703,13 @@ func GetBlockContentPlainWithResolver(ctx context.Context, block Block, resolver
 	if block.Type == "divider" {
 		return "───────────"
 	}
-	if s, ok := extendedBlockContent(block); ok {
+	// Table cells must use the ANSI-free renderer here. FormatAllBlocks
+	// truncates this function's output with a 47-byte slice, which would
+	// cut an escape sequence in half — see extendedBlockContent's godoc.
+	renderCell := func(cell []RichText) string {
+		return PlainRichTextWithResolver(ctx, cell, resolver)
+	}
+	if s, ok := extendedBlockContent(block, renderCell); ok {
 		return s
 	}
 	rt := blockRichText(block)
@@ -719,17 +740,21 @@ func mediaBlockContent(m *MediaBlock) string {
 	return "(empty)"
 }
 
-// formatTableRow joins a row's cells with " | ", taking the first plain-text
-// run of each cell. Empty cells render as an empty string, preserving column
-// positions in the output.
-func formatTableRow(row *TableRowBlock) string {
+// formatTableRow joins a row's cells with " | ". Each cell is rendered
+// with the caller-supplied renderCell so every run survives intact. Empty
+// cells render as an empty string, preserving column positions.
+//
+// renderCell is a parameter rather than a hardcoded RenderRichText so the
+// ANSI and ANSI-free callers each get their own renderer; see
+// extendedBlockContent's godoc for why that distinction is load-bearing.
+//
+// Previously this took only cell[0].PlainText, so a cell like
+// "Project: **Q2 Plan**" (three runs) silently truncated to "Project: "
+// — issue #69.
+func formatTableRow(row *TableRowBlock, renderCell func([]RichText) string) string {
 	parts := make([]string, 0, len(row.Cells))
 	for _, cell := range row.Cells {
-		text := ""
-		if len(cell) > 0 {
-			text = cell[0].PlainText
-		}
-		parts = append(parts, text)
+		parts = append(parts, renderCell(cell))
 	}
 	return "[ " + strings.Join(parts, " | ") + " ]"
 }
