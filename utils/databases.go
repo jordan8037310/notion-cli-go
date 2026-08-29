@@ -343,7 +343,17 @@ func (d *DatabaseClient) Create(ctx context.Context, req CreateDatabaseRequest) 
 		body["title"] = titleRichText(req.Title)
 	}
 	if len(req.Properties) > 0 {
-		body["properties"] = req.Properties
+		// The schema belongs to the database's INITIAL DATA SOURCE, not to
+		// the database itself. Notion's 2025-09-03 upgrade guide is
+		// explicit: "properties for the initial data source you're
+		// creating now go under initial_data_source[properties]".
+		// Top-level title/icon/cover still apply to the database.
+		//
+		// We pin 2026-03-11, so the pre-2025-09-03 top-level shape this
+		// used to send is wrong for every request the CLI makes.
+		body["initial_data_source"] = map[string]interface{}{
+			"properties": req.Properties,
+		}
 	}
 
 	httpReq, err := d.c.newRequest(ctx, http.MethodPost, "/databases", body)
@@ -373,17 +383,44 @@ func (d *DatabaseClient) Update(ctx context.Context, id string, req UpdateDataba
 		return nil, fmt.Errorf("update database: id is required")
 	}
 
-	body := map[string]interface{}{}
+	// Since 2025-09-03 these two live on different endpoints. Database
+	// attributes (title, icon, cover, parent, in_trash) stay on
+	// PATCH /v1/databases/{id}; the schema moved to the data source, and
+	// the database endpoint no longer accepts `properties` at all. The
+	// upgrade guide's instruction is to "switch over to the Update Data
+	// Source API to modify attributes that apply to a specific data
+	// source: properties".
+	//
+	// So a request carrying both is two calls against two different ids.
+	var out *Database
+
 	if req.Title != "" {
-		body["title"] = titleRichText(req.Title)
-	}
-	if len(req.Properties) > 0 {
-		body["properties"] = req.Properties
-	}
-	if len(body) == 0 {
-		return nil, fmt.Errorf("update database: no fields to update")
+		db, err := d.patchDatabaseAttrs(ctx, id, map[string]interface{}{
+			"title": titleRichText(req.Title),
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = db
 	}
 
+	if len(req.Properties) > 0 {
+		db, err := d.patchDataSourceSchema(ctx, id, req.Properties)
+		if err != nil {
+			return nil, err
+		}
+		out = db
+	}
+
+	if out == nil {
+		return nil, fmt.Errorf("update database: no fields to update")
+	}
+	return out, nil
+}
+
+// patchDatabaseAttrs issues PATCH /v1/databases/{id} for the attributes
+// that still belong to the database container.
+func (d *DatabaseClient) patchDatabaseAttrs(ctx context.Context, id string, body map[string]interface{}) (*Database, error) {
 	httpReq, err := d.c.newRequest(ctx, http.MethodPatch, "/databases/"+id, body)
 	if err != nil {
 		return nil, err
@@ -395,6 +432,27 @@ func (d *DatabaseClient) Update(ctx context.Context, id string, req UpdateDataba
 	var db Database
 	if err := decodeInto(resp, &db); err != nil {
 		return nil, fmt.Errorf("update database: %w", err)
+	}
+	return &db, nil
+}
+
+// patchDataSourceSchema issues PATCH /v1/data_sources/{id} with the
+// property schema. id must be a DATA SOURCE id; a database id is a
+// container and has no schema of its own, so the error names the command
+// that lists the ids which do.
+func (d *DatabaseClient) patchDataSourceSchema(ctx context.Context, id string, props map[string]DatabaseProperty) (*Database, error) {
+	body := map[string]interface{}{"properties": props}
+	httpReq, err := d.c.newRequest(ctx, http.MethodPatch, "/data_sources/"+id, body)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := d.c.do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("update data source schema: %w", err)
+	}
+	var db Database
+	if err := decodeInto(resp, &db); err != nil {
+		return nil, fmt.Errorf("update data source schema for %q: %w (a schema belongs to a data source, not to the database container — run `notioncli databases data-sources %s` to list the data source ids)", id, err, id)
 	}
 	return &db, nil
 }

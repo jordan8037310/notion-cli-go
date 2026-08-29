@@ -43,7 +43,11 @@ Examples:
   notioncli databases get <db-id>
   notioncli databases query <db-id> --filter-json ./filter.json --sort-json ./sort.json --limit 50
   notioncli databases create --parent <page-id> --title "My DB" --properties-json ./schema.json
-  notioncli databases update <db-id> --properties-json ./schema.json`,
+  notioncli databases update <data-source-id> --properties-json ./schema.json
+
+Note: a schema belongs to a DATA SOURCE, not to the database container.
+Pass a data source id when using --properties-json; "databases data-sources
+<db-id>" lists them.`,
 }
 
 // newDatabaseClient builds a DatabaseClient using the CLI's standard config
@@ -353,5 +357,5 @@ func init() {
 	databasesCreateCmd.Flags().StringVar(&dbCreatePropsFile, "properties-json", "", "Path to a JSON file with the database schema")
 
 	databasesUpdateCmd.Flags().StringVar(&dbUpdateTitle, "title", "", "New title for the database")
-	databasesUpdateCmd.Flags().StringVar(&dbUpdatePropsFile, "properties-json", "", "Path to a JSON file with the updated schema")
+	databasesUpdateCmd.Flags().StringVar(&dbUpdatePropsFile, "properties-json", "", "Path to a JSON file with the updated schema. Requires a DATA SOURCE id (see the data-sources subcommand), not a database id")
 }

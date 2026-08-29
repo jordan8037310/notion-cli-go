@@ -116,6 +116,12 @@ func (d *dbMockServer) handle(w http.ResponseWriter, r *http.Request) {
 		id := strings.TrimPrefix(r.URL.Path, "/databases/")
 		writeJSONDatabase(w, id, "Updated")
 
+	// Schema updates go to the data source, not the database container
+	// (Notion-Version 2025-09-03 onward).
+	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/data_sources/"):
+		id := strings.TrimPrefix(r.URL.Path, "/data_sources/")
+		writeJSONDatabase(w, id, "Schema updated")
+
 	default:
 		http.Error(w, `{"code":"not_found"}`, http.StatusNotFound)
 	}
@@ -217,13 +223,24 @@ func TestDatabases_Create_Minimal(t *testing.T) {
 	if !ok || len(title) == 0 {
 		t.Fatalf("expected title rich-text array, got %v", calls[0].body["title"])
 	}
-	// Properties must pass through.
-	gotProps, ok := calls[0].body["properties"].(map[string]interface{})
+	// The schema belongs to the initial DATA SOURCE, not to the database.
+	// Notion's 2025-09-03 upgrade guide: "properties for the initial data
+	// source you're creating now go under initial_data_source[properties]".
+	// A top-level `properties` key is the pre-upgrade shape and is wrong at
+	// the version this client pins.
+	if _, wrong := calls[0].body["properties"]; wrong {
+		t.Error("request body carries a top-level `properties` key; the schema must be nested under initial_data_source")
+	}
+	ids, ok := calls[0].body["initial_data_source"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("expected properties map, got %v", calls[0].body["properties"])
+		t.Fatalf("expected initial_data_source object, got %v", calls[0].body["initial_data_source"])
+	}
+	gotProps, ok := ids["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected initial_data_source.properties map, got %v", ids["properties"])
 	}
 	if _, ok := gotProps["Name"]; !ok {
-		t.Error("expected Name property in request body")
+		t.Error("expected Name property under initial_data_source.properties")
 	}
 	// Parent must carry page_id.
 	parent, ok := calls[0].body["parent"].(map[string]interface{})
@@ -278,7 +295,7 @@ func TestDatabases_Update_PropertiesOnly(t *testing.T) {
 	m := newDBMockServer(t)
 	dc := NewDatabaseClient(m.client())
 
-	_, err := dc.Update(context.Background(), "dbID", UpdateDatabaseRequest{
+	_, err := dc.Update(context.Background(), "dsID", UpdateDatabaseRequest{
 		Properties: map[string]DatabaseProperty{
 			"Priority": {"select": map[string]interface{}{}},
 		},
@@ -287,11 +304,56 @@ func TestDatabases_Update_PropertiesOnly(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 	calls := m.callsSnapshot()
+	if len(calls) != 1 {
+		t.Fatalf("len(calls)=%d want 1", len(calls))
+	}
+	// PATCH /v1/databases/{id} no longer accepts `properties` at all; the
+	// schema moved to the Update Data Source API (2025-09-03 upgrade
+	// guide). Sending it to the database endpoint is a silent no-op at
+	// best and a 400 at worst.
+	if calls[0].path != "/data_sources/dsID" {
+		t.Errorf("schema update hit %s, want /data_sources/dsID", calls[0].path)
+	}
 	if _, ok := calls[0].body["title"]; ok {
 		t.Error("properties-only update should not include title")
 	}
 	if _, ok := calls[0].body["properties"]; !ok {
 		t.Error("expected properties in body")
+	}
+}
+
+// TestDatabases_Update_TitleAndSchemaSplit pins the two-endpoint split: a
+// request carrying both a database attribute and a schema must issue one
+// PATCH to each surface, because since 2025-09-03 they live in different
+// places.
+func TestDatabases_Update_TitleAndSchemaSplit(t *testing.T) {
+	m := newDBMockServer(t)
+	dc := NewDatabaseClient(m.client())
+
+	_, err := dc.Update(context.Background(), "someID", UpdateDatabaseRequest{
+		Title: "Renamed",
+		Properties: map[string]DatabaseProperty{
+			"Priority": {"select": map[string]interface{}{}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	calls := m.callsSnapshot()
+	if len(calls) != 2 {
+		t.Fatalf("len(calls)=%d want 2 (one per surface)", len(calls))
+	}
+	if calls[0].path != "/databases/someID" {
+		t.Errorf("first call hit %s, want /databases/someID for the title", calls[0].path)
+	}
+	if _, ok := calls[0].body["properties"]; ok {
+		t.Error("the database-attribute call must not carry properties")
+	}
+	if calls[1].path != "/data_sources/someID" {
+		t.Errorf("second call hit %s, want /data_sources/someID for the schema", calls[1].path)
+	}
+	if _, ok := calls[1].body["title"]; ok {
+		t.Error("the data-source call must not carry title")
 	}
 }
 
