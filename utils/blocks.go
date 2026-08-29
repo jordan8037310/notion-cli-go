@@ -584,7 +584,12 @@ func captionRichText(s string) []map[string]interface{} {
 // is []RichText instead of a plain string so annotations, mentions,
 // inline equations, and multi-segment runs round-trip. Divider blocks
 // carry no rich text; use AddBlock for those.
-func (b *BlockClient) AddRichTextBlock(ctx context.Context, pageID, blockType string, rt []RichText) error {
+//
+// Optional per-type metadata is supplied via BlockOption values, the same
+// way AddBlock takes them. Today only WithLanguage is meaningful here (on
+// code blocks); the rest are accepted and ignored so the two write paths
+// keep an identical signature shape.
+func (b *BlockClient) AddRichTextBlock(ctx context.Context, pageID, blockType string, rt []RichText, opts ...BlockOption) error {
 	if !IsValidBlockType(blockType) {
 		return fmt.Errorf("unsupported block type: %s", blockType)
 	}
@@ -595,9 +600,21 @@ func (b *BlockClient) AddRichTextBlock(ctx context.Context, pageID, blockType st
 		return fmt.Errorf("rich text must have at least one segment")
 	}
 
+	cfg := blockConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	innerContent := map[string]interface{}{"rich_text": richTextToAPI(rt)}
 	if blockType == "code" {
-		innerContent["language"] = "plain text"
+		// Honour --language when the caller supplied one; fall back to
+		// Notion's "plain text" so a bare --rich-text-json code block
+		// keeps its historical shape (issue #68).
+		if cfg.Language != "" {
+			innerContent["language"] = cfg.Language
+		} else {
+			innerContent["language"] = "plain text"
+		}
 	}
 	body := map[string]interface{}{
 		"children": []map[string]interface{}{

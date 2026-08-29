@@ -493,8 +493,8 @@ func AddBlock(notionAPIKey, pageID, blockType, text string, opts ...BlockOption)
 // level delegates in this file (AddBlock, GetBlocks, ...). All of them are
 // on a migration path toward the *BlockClient method form; prefer
 // BlockClient.AddRichTextBlock in new code.
-func AddRichTextBlock(notionAPIKey, pageID, blockType string, rt []RichText) error {
-	return defaultBlockClient(notionAPIKey).AddRichTextBlock(defaultCtx(), pageID, blockType, rt)
+func AddRichTextBlock(notionAPIKey, pageID, blockType string, rt []RichText, opts ...BlockOption) error {
+	return defaultBlockClient(notionAPIKey).AddRichTextBlock(defaultCtx(), pageID, blockType, rt, opts...)
 }
 
 // DeleteBlock delegates to BlockClient.DeleteBlock on a default client.
