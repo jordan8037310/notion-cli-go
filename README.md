@@ -99,22 +99,79 @@ notioncli blocks delete 5
 - `divider` - Horizontal dividers
 - `code` - Code blocks
 
+### Page Commands
+
+- `pages get <id>`: Retrieve a page.
+- `pages create`: Create a page under a page or database parent.
+- `pages update <id>`: Update a page's title or properties.
+- `pages archive <id>` / `pages unarchive <id>`: Move a page to or from the trash.
+- `pages move <id> --parent <id>`: Reparent a page.
+- `pages duplicate <id> --parent <id>`: Copy a page and its blocks.
+- `pages set-icon <id> <path>` / `pages set-cover <id> <path>`: Upload a local
+  image and set it as the page's icon or cover.
+- `pages add-alias <name> <id>` / `pages list-aliases`: Manage the page aliases
+  used by `--page`.
+
+### Database Commands
+
+- `databases get <id>`: Retrieve a database.
+- `databases data-sources <id>`: List the data sources a database contains.
+  Since Notion-Version 2025-09-03 a database is a *container*; it is the data
+  source that holds the schema and answers queries, so this is how you find the
+  id to query.
+- `databases query <id>`: Query a data source, paginating results. Accepts
+  `--data-source <id>`, `--filter-json`, `--sort-json` and `--limit`.
+- `databases create` / `databases update <id>`: Create or update a database.
+
+### Workspace Commands
+
+- `search <query>`: Search pages and databases across the workspace
+  (`--type pages|databases`).
+- `fetch <url-or-id>`: Fetch a page or database by URL or id, auto-detecting
+  which it is.
+- `comments list` / `comments create`: Read and post comments.
+- `users list` / `users get <id>` / `users whoami`: Workspace users and the
+  current integration.
+- `views create` / `views update`: Manage data source views.
+- `teams`: Workspace teams (see Known Limitations).
+
+### Global Flags
+
+- `--page <id|alias>`: Target a specific page. Overrides `NOTION_PAGE_ID`.
+- `--json` / `--output json`: Emit JSON. List commands produce NDJSON — one
+  object per line — for piping into `jq`.
+- `--pretty`: Pretty-print JSON. List commands emit a single indented array
+  instead of NDJSON.
+- `--resolve-mentions`: Expand page mentions from `[page:<id>]` to `[<title>]`
+  in human output. Costs one API call per distinct page, cached per invocation.
+
 ### Other Commands
 
-- `completion`: Generate the autocompletion script for your shell
+- `version`: Print the build version.
+- `completion`: Generate the autocompletion script for your shell.
 - `help`: Show help information.
 
 ## Known Limitations
 
-Currently, the tool only supports a single Notion page at a time.
+- **Teams**: the teams API is unavailable on Notion-Version 2026-03-11; the
+  command returns a clear error rather than a raw 400 (issue #37).
+- **Retries**: the HTTP client does not yet honour `Retry-After` or back off on
+  429/5xx (issue #43). Long paginated runs against a rate-limited workspace can
+  fail mid-walk.
+- **No request timeout**: the HTTP client uses Go's default (none), so a hung
+  connection blocks indefinitely.
+
+Multi-page support landed via `--page` and aliases — the tool is no longer
+limited to a single page.
 
 ## Testing
 
-Currently some of the utility package block functions have test coverage. Invoke the tests with:
-
 ```bash
-go test -v ./...
+make ci          # everything CI runs: fmt, vet, race tests, coverage, gap gate
+go test -race ./...
 ```
+
+Coverage sits around 87% with a 70% floor enforced by `make cover`.
 
 ## License
 
