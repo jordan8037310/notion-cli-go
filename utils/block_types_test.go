@@ -155,6 +155,42 @@ func TestBlockTypes_GetBlockContent(t *testing.T) {
 			want: "[ a |  | c ]",
 		},
 		{
+			// Issue #69: cells used to render cell[0].PlainText only, so
+			// every run past the first was silently dropped.
+			name: "table_row multi-run cells",
+			block: Block{
+				Type: "table_row",
+				TableRow: &TableRowBlock{
+					Cells: [][]RichText{
+						{{PlainText: "single"}},
+						{{PlainText: "a"}, {PlainText: "b"}, {PlainText: "c"}},
+						{{PlainText: "Project: "}, {PlainText: "Q2 Plan"}},
+					},
+				},
+			},
+			want: "[ single | abc | Project: Q2 Plan ]",
+		},
+		{
+			// Cells render through RenderRichText, so mention markers
+			// match every other block type's inline rich-text rendering.
+			// A plain concatenation would emit the mention's PlainText
+			// ("Roadmap"); only RenderRichText produces "[page:p-1]".
+			// Annotations render as ANSI attributes, which fatih/color
+			// suppresses under a non-TTY, so bold is bare here.
+			name: "table_row annotated and mention cells",
+			block: Block{
+				Type: "table_row",
+				TableRow: &TableRowBlock{
+					Cells: [][]RichText{
+						{{PlainText: "plain "}, {PlainText: "bold", Annotations: Annotation{Bold: true}}},
+						{{PlainText: "see "}, {Type: "mention", PlainText: "Roadmap",
+							Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-1"}}}},
+					},
+				},
+			},
+			want: "[ plain bold | see [page:p-1] ]",
+		},
+		{
 			name: "synced_block original",
 			block: Block{
 				Type:        "synced_block",

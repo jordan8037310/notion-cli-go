@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"notioncli/utils"
@@ -224,14 +225,17 @@ func emitSearchError(cmd *cobra.Command, err error) {
 // extractSearchTitle digs into the raw Notion payload to find the object's
 // display title. Pages put it at properties.title.title[].plain_text;
 // databases put it at title[].plain_text. Falls back to "" on any miss.
+//
+// Every run is concatenated. A title carrying mixed formatting, a mention
+// or a link is split by Notion into several rich-text runs, so reading
+// only the first one truncated the label — issue #77. This matches what
+// pagePlainTitle / databasePlainTitle / findPageTitleText already do.
 func extractSearchTitle(r utils.SearchResult) string {
 	// Database shape: top-level `title` array of rich text.
 	if len(r.Title) > 0 {
-		var rt []struct {
-			PlainText string `json:"plain_text"`
-		}
+		var rt []plainRun
 		if err := json.Unmarshal(r.Title, &rt); err == nil && len(rt) > 0 {
-			return rt[0].PlainText
+			return joinPlainText(rt)
 		}
 	}
 	// Page shape: properties.title.title[].plain_text. The key is typically
@@ -242,21 +246,37 @@ func extractSearchTitle(r utils.SearchResult) string {
 		if err := json.Unmarshal(r.Properties, &props); err == nil {
 			for _, raw := range props {
 				var p struct {
-					Type  string `json:"type"`
-					Title []struct {
-						PlainText string `json:"plain_text"`
-					} `json:"title"`
+					Type  string     `json:"type"`
+					Title []plainRun `json:"title"`
 				}
 				if err := json.Unmarshal(raw, &p); err != nil {
 					continue
 				}
 				if p.Type == "title" && len(p.Title) > 0 {
-					return p.Title[0].PlainText
+					return joinPlainText(p.Title)
 				}
 			}
 		}
 	}
 	return ""
+}
+
+// plainRun is the minimal shape of a Notion rich-text run: just the
+// pre-rendered plain_text. Both title shapes above decode into a slice
+// of these.
+type plainRun struct {
+	PlainText string `json:"plain_text"`
+}
+
+// joinPlainText concatenates the plain_text of every run. Notion splits a
+// title across runs at every formatting, mention or link boundary, so only
+// the concatenation is the whole title.
+func joinPlainText(runs []plainRun) string {
+	var sb strings.Builder
+	for _, r := range runs {
+		sb.WriteString(r.PlainText)
+	}
+	return sb.String()
 }
 
 // truncateRunes shortens s to at most max *runes*, appending "..." when

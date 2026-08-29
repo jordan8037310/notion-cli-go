@@ -708,17 +708,18 @@ func mediaBlockContent(m *MediaBlock) string {
 	return "(empty)"
 }
 
-// formatTableRow joins a row's cells with " | ", taking the first plain-text
-// run of each cell. Empty cells render as an empty string, preserving column
-// positions in the output.
+// formatTableRow joins a row's cells with " | ". Each cell is rendered
+// through RenderRichText so multi-run cells survive intact and annotations
+// and mention markers match how every other block type renders inline rich
+// text. Empty cells render as an empty string, preserving column positions.
+//
+// Previously this took only cell[0].PlainText, so a cell like
+// "Project: **Q2 Plan**" (three runs) silently truncated to "Project: "
+// — issue #69.
 func formatTableRow(row *TableRowBlock) string {
 	parts := make([]string, 0, len(row.Cells))
 	for _, cell := range row.Cells {
-		text := ""
-		if len(cell) > 0 {
-			text = cell[0].PlainText
-		}
-		parts = append(parts, text)
+		parts = append(parts, RenderRichText(cell))
 	}
 	return "[ " + strings.Join(parts, " | ") + " ]"
 }

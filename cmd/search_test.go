@@ -330,6 +330,18 @@ func TestExtractSearchTitle(t *testing.T) {
 			want: "Renamed",
 		},
 		{
+			// Issue #77: only the first run was read, so a title split
+			// across runs by formatting/mentions/links was truncated.
+			name: "database title split across runs",
+			raw:  `{"object":"database","id":"db","title":[{"plain_text":"Project: "},{"plain_text":"Q2 Plan"},{"plain_text":""}]}`,
+			want: "Project: Q2 Plan",
+		},
+		{
+			name: "page title split across runs",
+			raw:  `{"object":"page","id":"pg","properties":{"Name":{"type":"title","title":[{"plain_text":"Weekly "},{"plain_text":"Sync"},{"plain_text":" — 2026"}]}}}`,
+			want: "Weekly Sync — 2026",
+		},
+		{
 			name: "no title fields",
 			raw:  `{"object":"page","id":"pg"}`,
 			want: "",
