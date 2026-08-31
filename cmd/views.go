@@ -14,6 +14,7 @@ import (
 
 	"notioncli/utils"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 )
 
@@ -21,6 +22,7 @@ import (
 // used by pages.go/blocks.go so cobra can bind them in init().
 var (
 	viewsCreateName       string
+	viewsCreateDataSource string
 	viewsCreateType       string
 	viewsCreateConfigFile string
 	viewsUpdateName       string
@@ -90,9 +92,14 @@ func readConfigJSON(path string) (json.RawMessage, error) {
 // config-file parsing, or the underlying POST /v1/data_sources/{id}/views
 // call) and are wrapped before returning.
 var viewsCreateCmd = &cobra.Command{
-	Use:   "create <database-id>",
-	Short: "Create a new view on a database",
-	Long: `Create a new view on the given database (data source).
+	Use:   "create <database-id> --data-source <ds-id>",
+	Short: "Create a new view on a data source",
+	Long: `Create a new view.
+
+A view reads a DATA SOURCE and belongs to a DATABASE container, and Notion
+requires both ids. Pass the container as the positional argument and the
+data source with --data-source; ` + "`databases data-sources <db-id>`" + `
+lists the data source ids.
 
 The --type flag must be one of: table, board, list, gallery, calendar,
 timeline. The optional --config-json flag points at a JSON file whose
@@ -113,10 +120,11 @@ contents are forwarded verbatim as the view's configuration payload.`,
 		// building the client so bad input (e.g. --type bogus) surfaces
 		// as an input error rather than behind an auth/config failure.
 		req := utils.CreateViewRequest{
-			DatabaseID: args[0],
-			Name:       viewsCreateName,
-			Type:       viewsCreateType,
-			Config:     config,
+			DatabaseID:   args[0],
+			DataSourceID: viewsCreateDataSource,
+			Name:         viewsCreateName,
+			Type:         viewsCreateType,
+			Config:       config,
 		}
 		if err := req.Validate(); err != nil {
 			return err
@@ -128,6 +136,88 @@ contents are forwarded verbatim as the view's configuration payload.`,
 		view, err := vc.Create(context.Background(), req)
 		if err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("create view: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), view))
+		}
+		printView(cmd.OutOrStdout(), view)
+		return nil
+	},
+}
+
+// viewsListCmd enumerates the views on a data source.
+//
+// Without this, `views update <view-id>` demanded an id the CLI provided no
+// way to obtain — the same gap as the data source ids in issue #94 (#103).
+var viewsListCmd = &cobra.Command{
+	Use:   "list <data-source-id>",
+	Short: "List the views on a data source",
+	Long: `List the views on a data source.
+
+Notion's list endpoint returns view IDs only, not their names or types —
+run ` + "`views get <view-id>`" + ` for the detail. The ids are what
+` + "`views update`" + ` needs, which is why this command exists.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		vc, err := newViewClient()
+		if err != nil {
+			return jsonErrorOr(cmd, err)
+		}
+		views, err := vc.List(context.Background(), args[0])
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("list views: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), views))
+		}
+		w := cmd.OutOrStdout()
+		if len(views) == 0 {
+			color.Yellow("No views on data source %s.", args[0])
+			return nil
+		}
+		// GET /v1/views returns bare references — {object, id} and
+		// nothing else, verified live. Printing an absent name as
+		// "(unnamed)" would claim the view has no name, which is a
+		// different and false statement. Show what the endpoint gives
+		// and point at where the detail lives.
+		detailed := false
+		for _, v := range views {
+			if v.Name != "" || v.Type != "" {
+				detailed = true
+			}
+		}
+		for _, v := range views {
+			if detailed {
+				name := v.Name
+				if name == "" {
+					name = "-"
+				}
+				fmt.Fprintf(w, "%s  %-10s %s\n", v.ID, v.Type, name)
+				continue
+			}
+			fmt.Fprintln(w, v.ID)
+		}
+		color.Cyan("  %d view(s)", len(views))
+		if !detailed {
+			fmt.Fprintln(w, "  (the list endpoint returns ids only — run `notioncli views get <view-id>` for name, type and config)")
+		}
+		return nil
+	},
+}
+
+// viewsGetCmd retrieves a single view.
+var viewsGetCmd = &cobra.Command{
+	Use:   "get <view-id>",
+	Short: "Retrieve a view by id",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		vc, err := newViewClient()
+		if err != nil {
+			return jsonErrorOr(cmd, err)
+		}
+		view, err := vc.Get(context.Background(), args[0])
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("get view: %w", err))
 		}
 		if globalJSON {
 			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), view))
@@ -208,7 +298,10 @@ func init() {
 	rootCmd.AddCommand(viewsCmd)
 	viewsCmd.AddCommand(viewsCreateCmd)
 	viewsCmd.AddCommand(viewsUpdateCmd)
+	viewsCmd.AddCommand(viewsListCmd)
+	viewsCmd.AddCommand(viewsGetCmd)
 
+	viewsCreateCmd.Flags().StringVar(&viewsCreateDataSource, "data-source", "", "Data source id the view reads (see `databases data-sources`)")
 	viewsCreateCmd.Flags().StringVar(&viewsCreateName, "name", "", "Display name for the new view (required)")
 	// The suffix is generated from utils.ValidViewTypes so the help
 	// text can't drift from the validator's accepted set.

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 )
 
 // ValidViewTypes is the closed set of view types accepted by
@@ -23,12 +24,26 @@ var ValidViewTypes = []string{"table", "board", "list", "gallery", "calendar", "
 // arbitrary view-configuration payloads byte-for-byte (preserving key
 // order and avoiding the float64 coercion of numeric IDs).
 type View struct {
-	Object     string          `json:"object"`
-	ID         string          `json:"id"`
-	Name       string          `json:"name,omitempty"`
-	Type       string          `json:"type,omitempty"`
-	DatabaseID string          `json:"database_id,omitempty"`
-	Config     json.RawMessage `json:"config,omitempty"`
+	Object string `json:"object"`
+	ID     string `json:"id"`
+	Name   string `json:"name,omitempty"`
+	Type   string `json:"type,omitempty"`
+	// DataSourceID and Parent are what the API actually returns; the
+	// response carries `data_source_id` at the top level and a
+	// `parent` of type database_id. DatabaseID is retained for
+	// back-compat with callers that read it.
+	DataSourceID string          `json:"data_source_id,omitempty"`
+	Parent       PageParent      `json:"parent,omitempty"`
+	DatabaseID   string          `json:"database_id,omitempty"`
+	Config       json.RawMessage `json:"config,omitempty"`
+}
+
+// ViewList is a page of GET /v1/views results.
+type ViewList struct {
+	Object     string `json:"object"`
+	Results    []View `json:"results"`
+	NextCursor string `json:"next_cursor"`
+	HasMore    bool   `json:"has_more"`
 }
 
 // CreateViewRequest is the body for POST to a data source's views
@@ -38,6 +53,11 @@ type View struct {
 // free-form payload the upstream API accepts to override column order,
 // filters, sorts, etc.
 type CreateViewRequest struct {
+	// DataSourceID is the data source the view reads. Required.
+	DataSourceID string `json:"-"`
+	// DatabaseID is the container the view belongs to. The API requires
+	// exactly one of database_id / view_id / create_database alongside
+	// data_source_id; this client supplies database_id.
 	DatabaseID string          `json:"-"`
 	Name       string          `json:"name"`
 	Type       string          `json:"type"`
@@ -47,6 +67,9 @@ type CreateViewRequest struct {
 // Validate returns a non-nil error if the request is missing a required
 // field or carries an unknown Type.
 func (r CreateViewRequest) Validate() error {
+	if r.DataSourceID == "" {
+		return errors.New("create view: --data-source is required (the view reads a data source; `databases data-sources <db-id>` lists them)")
+	}
 	if r.DatabaseID == "" {
 		return errors.New("create view: database_id is required")
 	}
@@ -129,20 +152,25 @@ func (v *ViewClient) Create(ctx context.Context, req CreateViewRequest) (*View, 
 		return nil, err
 	}
 
-	// Build the wire body manually — json:"-" on DatabaseID means the
-	// default Marshal would already omit it, but we also need to guard
-	// against nil Config being sent as `null`. Build a small map so the
-	// body stays minimal and symmetric with other resource clients.
+	// POST /v1/views — NOT /v1/data_sources/{id}/views, which this client
+	// used to call and which does not exist: the live API answers it with
+	// 400 invalid_request_url, so `views create` failed 100% of the time
+	// while the unit tests passed against the invented shape (issue #102).
+	//
+	// The ids go in the BODY. Notion requires data_source_id plus exactly
+	// one of database_id / view_id / create_database — verified live, the
+	// validation_error names those three by name.
 	body := map[string]interface{}{
-		"name": req.Name,
-		"type": req.Type,
+		"name":           req.Name,
+		"type":           req.Type,
+		"data_source_id": req.DataSourceID,
+		"database_id":    req.DatabaseID,
 	}
 	if !isEmptyRawJSON(req.Config) {
 		body["config"] = req.Config
 	}
 
-	path := "/data_sources/" + req.DatabaseID + "/views"
-	httpReq, err := v.c.newRequest(ctx, http.MethodPost, path, body)
+	httpReq, err := v.c.newRequest(ctx, http.MethodPost, "/views", body)
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +183,71 @@ func (v *ViewClient) Create(ctx context.Context, req CreateViewRequest) (*View, 
 		return nil, fmt.Errorf("create view: %w", err)
 	}
 	return &view, nil
+}
+
+// Get retrieves a single view. Added with List because `views update`
+// requires a view id the CLI previously gave no way to obtain — the same
+// shape of gap as the data source ids in issue #94 (issue #103).
+func (v *ViewClient) Get(ctx context.Context, id string) (*View, error) {
+	if id == "" {
+		return nil, errors.New("get view: id is required")
+	}
+	if err := v.checkAuth(); err != nil {
+		return nil, err
+	}
+	req, err := v.c.newRequest(ctx, http.MethodGet, "/views/"+id, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := v.c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get view: %w", err)
+	}
+	var view View
+	if err := decodeInto(resp, &view); err != nil {
+		return nil, fmt.Errorf("get view: %w", err)
+	}
+	return &view, nil
+}
+
+// List walks every view on a data source. Paginated: the endpoint returns
+// has_more/next_cursor like every other list surface, and reading only the
+// first page is the defect pattern behind issues #55, #57 and #108.
+func (v *ViewClient) List(ctx context.Context, dataSourceID string) ([]View, error) {
+	if dataSourceID == "" {
+		return nil, errors.New("list views: data source id is required")
+	}
+	if err := v.checkAuth(); err != nil {
+		return nil, err
+	}
+
+	all := []View{}
+	cursor := ""
+	for {
+		q := url.Values{}
+		q.Set("data_source_id", dataSourceID)
+		if cursor != "" {
+			q.Set("start_cursor", cursor)
+		}
+		req, err := v.c.newRequest(ctx, http.MethodGet, "/views?"+q.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := v.c.do(req)
+		if err != nil {
+			return nil, fmt.Errorf("list views: %w", err)
+		}
+		var page ViewList
+		if err := decodeInto(resp, &page); err != nil {
+			return nil, fmt.Errorf("list views: %w", err)
+		}
+		all = append(all, page.Results...)
+		if !page.HasMore || page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	return all, nil
 }
 
 // Update PATCHes an existing view by ID via PATCH /v1/views/{id}.

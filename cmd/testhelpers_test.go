@@ -76,13 +76,32 @@ func cmdMockServer(t *testing.T) *httptest.Server {
 				},
 			})
 
-		// POST /data_sources/{id}/views: views create.
-		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/data_sources/") && strings.HasSuffix(r.URL.Path, "/views"):
+		// POST /v1/views: views create. NOT /data_sources/{id}/views —
+		// that path does not exist and the live API answers it with
+		// 400 invalid_request_url (issue #102).
+		case r.Method == http.MethodPost && r.URL.Path == "/views":
 			writeJSON(w, utils.View{
 				Object: "view",
 				ID:     "view-created-id",
 				Name:   "n",
 				Type:   "table",
+			})
+
+		// GET /v1/views?data_source_id=: views list.
+		case r.Method == http.MethodGet && r.URL.Path == "/views":
+			writeJSON(w, map[string]interface{}{
+				"object": "list", "has_more": false, "next_cursor": nil,
+				"results": []utils.View{
+					{Object: "view", ID: "view-1", Name: "Table", Type: "table"},
+					{Object: "view", ID: "view-2", Name: "Board", Type: "board"},
+				},
+			})
+
+		// GET /v1/views/{id}: views get.
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/views/"):
+			writeJSON(w, utils.View{
+				Object: "view", ID: strings.TrimPrefix(r.URL.Path, "/views/"),
+				Name: "Fetched", Type: "table",
 			})
 
 		// PATCH /views/{id}: views update.

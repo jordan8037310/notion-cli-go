@@ -84,7 +84,7 @@ func TestViews_SubcommandsValid(t *testing.T) {
 }
 
 // TestViews_Create_HappyPath runs `views create ...` against the shared
-// mock server (extended to handle /data_sources/*/views) and verifies
+// mock server (extended to handle POST /views) and verifies
 // the View is printed.
 func TestViews_Create_HappyPath(t *testing.T) {
 	_ = withCmdEnv(t)
@@ -92,7 +92,7 @@ func TestViews_Create_HappyPath(t *testing.T) {
 	resetRootCmdArgs()
 
 	var buf bytes.Buffer
-	rootCmd.SetArgs([]string{"views", "create", "db-id", "--name", "My View", "--type", "table"})
+	rootCmd.SetArgs([]string{"views", "create", "db-id", "--data-source", "ds-id", "--name", "My View", "--type", "table"})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
 	rootCmd.SetOut(&buf)
@@ -112,7 +112,7 @@ func TestViews_Create_MissingName(t *testing.T) {
 	resetViewsFlags()
 	resetRootCmdArgs()
 
-	rootCmd.SetArgs([]string{"views", "create", "dbID", "--type", "table"})
+	rootCmd.SetArgs([]string{"views", "create", "dbID", "--data-source", "ds-id", "--type", "table"})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
 	err := rootCmd.Execute()
@@ -130,7 +130,7 @@ func TestViews_Create_MissingType(t *testing.T) {
 	resetViewsFlags()
 	resetRootCmdArgs()
 
-	rootCmd.SetArgs([]string{"views", "create", "dbID", "--name", "n"})
+	rootCmd.SetArgs([]string{"views", "create", "dbID", "--data-source", "ds-id", "--name", "n"})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
 	err := rootCmd.Execute()
@@ -149,7 +149,7 @@ func TestViews_Create_WrongArgCount(t *testing.T) {
 	resetViewsFlags()
 	resetRootCmdArgs()
 
-	rootCmd.SetArgs([]string{"views", "create", "--name", "n", "--type", "table"})
+	rootCmd.SetArgs([]string{"views", "create", "--name", "--data-source", "ds-id", "n", "--type", "table"})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
 	if err := rootCmd.Execute(); err == nil {
@@ -168,7 +168,7 @@ func TestViews_Create_AllTypesHappyPath(t *testing.T) {
 			resetRootCmdArgs()
 
 			var buf bytes.Buffer
-			rootCmd.SetArgs([]string{"views", "create", "db-id", "--name", "n", "--type", vt})
+			rootCmd.SetArgs([]string{"views", "create", "db-id", "--data-source", "ds-id", "--name", "n", "--type", vt})
 			rootCmd.SilenceUsage = true
 			rootCmd.SilenceErrors = true
 			rootCmd.SetOut(&buf)
@@ -194,7 +194,7 @@ func TestViews_Create_WithConfigJSON(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	rootCmd.SetArgs([]string{"views", "create", "db-id", "--name", "n", "--type", "table", "--config-json", path})
+	rootCmd.SetArgs([]string{"views", "create", "db-id", "--data-source", "ds-id", "--name", "n", "--type", "table", "--config-json", path})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
 	rootCmd.SetOut(&buf)
@@ -217,7 +217,7 @@ func TestViews_Create_BadConfigJSON(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	rootCmd.SetArgs([]string{"views", "create", "dbID", "--name", "n", "--type", "table", "--config-json", path})
+	rootCmd.SetArgs([]string{"views", "create", "dbID", "--data-source", "ds-id", "--name", "n", "--type", "table", "--config-json", path})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
 	err := rootCmd.Execute()
@@ -236,7 +236,7 @@ func TestViews_Create_MissingConfigJSONFile(t *testing.T) {
 	resetViewsFlags()
 	resetRootCmdArgs()
 
-	rootCmd.SetArgs([]string{"views", "create", "dbID", "--name", "n", "--type", "table", "--config-json", "/does/not/exist.json"})
+	rootCmd.SetArgs([]string{"views", "create", "dbID", "--data-source", "ds-id", "--name", "n", "--type", "table", "--config-json", "/does/not/exist.json"})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
 	err := rootCmd.Execute()
@@ -314,7 +314,7 @@ func TestViews_Create_ValidationBeforeClientBuild(t *testing.T) {
 	// Force the client-build path to fail if it runs.
 	t.Setenv("NOTION_API_KEY", "")
 
-	rootCmd.SetArgs([]string{"views", "create", "dbID", "--name", "n", "--type", "bogus"})
+	rootCmd.SetArgs([]string{"views", "create", "dbID", "--data-source", "ds-id", "--name", "n", "--type", "bogus"})
 	rootCmd.SilenceUsage = true
 	rootCmd.SilenceErrors = true
 	err := rootCmd.Execute()
