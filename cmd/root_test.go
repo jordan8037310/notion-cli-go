@@ -175,11 +175,13 @@ func TestJSONMode_SingleErrorLine(t *testing.T) {
 		t.Fatalf("json mode emitted %d stderr lines, want exactly 1 (the JSON envelope):\n%s",
 			len(lines), stderr.String())
 	}
-	var env map[string]string
+	// The envelope carries typed fields alongside the message now (issue
+	// #101), so status is a number — decode loosely.
+	var env map[string]interface{}
 	if err := json.Unmarshal([]byte(lines[0]), &env); err != nil {
 		t.Fatalf("stderr line is not a JSON error envelope: %v (%q)", err, lines[0])
 	}
-	if env["error"] == "" {
+	if env["error"] == nil || env["error"] == "" {
 		t.Errorf("JSON error envelope has no error field: %q", lines[0])
 	}
 	if strings.Contains(stderr.String(), "Usage:") {
@@ -270,11 +272,12 @@ func TestJSONMode_BareErrorStillEmitsEnvelope(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("want exactly 1 stderr line, got %d:\n%s", len(lines), out)
 	}
-	var env map[string]string
+	var env map[string]interface{}
 	if err := json.Unmarshal([]byte(lines[0]), &env); err != nil {
 		t.Fatalf("stderr is not a JSON envelope: %v (%q)", err, lines[0])
 	}
-	if !strings.Contains(env["error"], "--name") {
-		t.Errorf("envelope should carry the real validation error, got %q", env["error"])
+	msg, _ := env["error"].(string)
+	if !strings.Contains(msg, "--name") {
+		t.Errorf("envelope should carry the real validation error, got %q", msg)
 	}
 }

@@ -11,6 +11,8 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1013,5 +1015,58 @@ func TestEmitRaw(t *testing.T) {
 	var round map[string]interface{}
 	if err := json.Unmarshal(pretty.Bytes(), &round); err != nil {
 		t.Errorf("emitRaw pretty output is not valid JSON: %v", err)
+	}
+}
+
+// TestEmitError_CarriesTheStructuredFields guards issue #101 at the output
+// boundary. A JSON consumer should be able to branch on `code` and quote
+// `request_id` to Notion support, instead of parsing an English sentence.
+func TestEmitError_CarriesTheStructuredFields(t *testing.T) {
+	t.Cleanup(resetGlobalOutputFlags)
+	resetGlobalOutputFlags()
+
+	apiErr := &utils.APIError{
+		Status: 404, Code: "object_not_found",
+		Message: "Could not find page with ID: abc.", RequestID: "req-123",
+	}
+	apiErr.Suggestion = "share the page with the integration"
+
+	var buf bytes.Buffer
+	emitError(&buf, fmt.Errorf("fetch: %w", apiErr))
+
+	var env map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("envelope is not JSON: %v (%s)", err, buf.String())
+	}
+	for k, want := range map[string]interface{}{
+		"code": "object_not_found", "request_id": "req-123", "status": float64(404),
+	} {
+		if env[k] != want {
+			t.Errorf("envelope[%q] = %v, want %v", k, env[k], want)
+		}
+	}
+	if env["error"] == nil || env["error"] == "" {
+		t.Error("envelope must still carry the human-readable error")
+	}
+	if env["suggestion"] == nil {
+		t.Error("envelope should carry the remediation when we have one")
+	}
+}
+
+// TestEmitError_PlainErrorStaysMinimal confirms a non-API error is not
+// dressed up with fields it does not have.
+func TestEmitError_PlainErrorStaysMinimal(t *testing.T) {
+	t.Cleanup(resetGlobalOutputFlags)
+	resetGlobalOutputFlags()
+
+	var buf bytes.Buffer
+	emitError(&buf, errors.New("no target page"))
+
+	var env map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("envelope is not JSON: %v", err)
+	}
+	if len(env) != 1 || env["error"] != "no target page" {
+		t.Errorf("plain error envelope = %v, want just {error}", env)
 	}
 }
