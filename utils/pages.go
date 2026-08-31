@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -794,4 +796,102 @@ func richTextPayload(runs []RichText) []map[string]interface{} {
 		}
 	}
 	return richTextToAPI(normalized)
+}
+
+// PropertyItemPage is one page of GET /v1/pages/{id}/properties/{prop_id}.
+// Results stay raw: a property item can be any of ~20 shapes (relation,
+// people, rollup, formula, …) and modelling them all here would be a large
+// typed surface for no benefit to a passthrough command.
+type PropertyItemPage struct {
+	Object       string            `json:"object"`
+	Type         string            `json:"type"`
+	Results      []json.RawMessage `json:"results"`
+	PropertyItem json.RawMessage   `json:"property_item,omitempty"`
+	NextCursor   string            `json:"next_cursor"`
+	HasMore      bool              `json:"has_more"`
+}
+
+// MaxPageReferencesInline is Notion's documented cap: GET /v1/pages/{id}
+// returns at most 25 page or person references per property. Beyond that
+// the page response is silently truncated and the property-item endpoint is
+// the only way to see the rest.
+// https://developers.notion.com/reference/retrieve-a-page
+const MaxPageReferencesInline = 25
+
+// GetPropertyItem walks every item of a single page property.
+//
+// GET /v1/pages/{id} caps page and person references at 25 per property and
+// gives no indication when it truncates — so a relation with 40 entries
+// reported its first 25 as though they were the whole set, and any script
+// computing over relations got a wrong answer that looked right. This is the
+// documented escape hatch (issue #104).
+//
+// propertyID is URL-escaped: Notion property ids are opaque and routinely
+// contain reserved characters (a real one observed live: "Ln%3EX", i.e.
+// "Ln>X"). Interpolating unescaped would address a different property or
+// 404.
+func (p *PageClient) GetPropertyItem(ctx context.Context, pageID, propertyID string) ([]json.RawMessage, error) {
+	if err := p.checkAuth(); err != nil {
+		return nil, fmt.Errorf("get property item: %w", err)
+	}
+	if pageID == "" || propertyID == "" {
+		return nil, fmt.Errorf("get property item: page id and property id are required")
+	}
+
+	all := []json.RawMessage{}
+	cursor := ""
+	for {
+		path := "/pages/" + pageID + "/properties/" + url.PathEscape(propertyID)
+		if cursor != "" {
+			path += "?start_cursor=" + url.QueryEscape(cursor)
+		}
+		req, err := p.c.newRequest(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := p.c.do(req)
+		if err != nil {
+			return nil, fmt.Errorf("get property item: %w", err)
+		}
+		var page PropertyItemPage
+		if err := decodeInto(resp, &page); err != nil {
+			return nil, fmt.Errorf("get property item: %w", err)
+		}
+		// A simple property (title, number, checkbox) answers with a
+		// single property_item rather than a results list.
+		if len(page.Results) == 0 && len(page.PropertyItem) > 0 {
+			return []json.RawMessage{page.PropertyItem}, nil
+		}
+		all = append(all, page.Results...)
+		if !page.HasMore || page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	return all, nil
+}
+
+// TruncatedProperties reports which of a page's properties came back at
+// exactly the 25-reference cap, i.e. those whose values are probably
+// incomplete. Callers use it to warn rather than silently under-report.
+//
+// It cannot distinguish "exactly 25" from "truncated at 25" — Notion gives
+// no flag on the page response — so this is a heuristic, and the message it
+// drives says so.
+func TruncatedProperties(props map[string]interface{}) []string {
+	var names []string
+	for name, raw := range props {
+		prop, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, key := range []string{"relation", "people", "rich_text"} {
+			if items, ok := prop[key].([]interface{}); ok && len(items) >= MaxPageReferencesInline {
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
 }

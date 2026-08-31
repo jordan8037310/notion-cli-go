@@ -72,6 +72,11 @@ var SupportedBlockTypes = map[string]BlockTypeInfo{
 	"synced_block": {Icon: "⟳", Color: "magenta"},
 	"column_list":  {Icon: "⫴", Color: "white"},
 	"column":       {Icon: "│", Color: "white"},
+	// Read-only structural types. Registered so `blocks list` renders an
+	// icon rather than "?"; they are not addable via `blocks add`, which
+	// IsAddableBlockType already governs separately (issue #106).
+	"child_page":     {Icon: "📄", Color: "cyan"},
+	"child_database": {Icon: "🗄", Color: "cyan"},
 }
 
 // AddableBlockTypes lists block types that can be appended via the simple
@@ -282,6 +287,18 @@ type Block struct {
 	SyncedBlock *SyncedBlock   `json:"synced_block,omitempty"`
 	ColumnList  *ColumnList    `json:"column_list,omitempty"`
 	Column      *Column        `json:"column,omitempty"`
+	// Subpages and inline databases are extremely common on real pages
+	// and were entirely unmodelled, so `blocks list` rendered them as
+	// "? … (empty)" — under-reporting page content and making the listing
+	// untrustworthy as an inventory (issue #106).
+	ChildPage     *ChildTitleBlock `json:"child_page,omitempty"`
+	ChildDatabase *ChildTitleBlock `json:"child_database,omitempty"`
+}
+
+// ChildTitleBlock is the payload shared by child_page and child_database:
+// a single plain-text title. https://developers.notion.com/reference/block
+type ChildTitleBlock struct {
+	Title string `json:"title"`
 }
 
 // ExternalFile is the external-URL variant of a Notion media reference. Used
@@ -300,10 +317,23 @@ type FileUploadRef struct {
 // one of External or FileUpload is set depending on Type ("external" or
 // "file_upload"). Caption is optional.
 type MediaBlock struct {
-	Type       string         `json:"type"`
-	External   *ExternalFile  `json:"external,omitempty"`
+	Type     string        `json:"type"`
+	External *ExternalFile `json:"external,omitempty"`
+	// File is the Notion-HOSTED variant. The file object has three types —
+	// "file", "file_upload" and "external" — and this one was missing, so
+	// any image/file/video uploaded through the Notion UI (the common
+	// case) rendered as "(empty)". See issue #106 and
+	// https://developers.notion.com/reference/file-object
+	File       *HostedFile    `json:"file,omitempty"`
 	FileUpload *FileUploadRef `json:"file_upload,omitempty"`
 	Caption    []RichText     `json:"caption,omitempty"`
+}
+
+// HostedFile is a Notion-hosted file reference. The URL is presigned and
+// expires, which is why ExpiryTime is worth carrying.
+type HostedFile struct {
+	URL        string `json:"url"`
+	ExpiryTime string `json:"expiry_time,omitempty"`
 }
 
 // EmbedBlock is a generic embed (Miro, Twitter, etc.) addressed by URL.
@@ -631,6 +661,18 @@ func extendedBlockContent(block Block, renderCell func([]RichText) string) (stri
 			return formatTableRow(block.TableRow, renderCell), true
 		}
 		return "(empty)", true
+	case "child_page":
+		// No emoji prefix: the listing already renders the type's icon in
+		// its own column, and repeating it reads as a rendering bug.
+		if block.ChildPage != nil && block.ChildPage.Title != "" {
+			return block.ChildPage.Title, true
+		}
+		return "(untitled subpage)", true
+	case "child_database":
+		if block.ChildDatabase != nil && block.ChildDatabase.Title != "" {
+			return block.ChildDatabase.Title, true
+		}
+		return "(untitled database)", true
 	case "synced_block":
 		if block.SyncedBlock != nil {
 			if block.SyncedBlock.SyncedFrom != nil {
@@ -731,6 +773,10 @@ func mediaBlockContent(m *MediaBlock) string {
 	case "external":
 		if m.External != nil {
 			return m.External.URL
+		}
+	case "file":
+		if m.File != nil {
+			return m.File.URL
 		}
 	case "file_upload":
 		if m.FileUpload != nil {

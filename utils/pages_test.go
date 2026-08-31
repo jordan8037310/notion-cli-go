@@ -907,3 +907,90 @@ func TestPageClient_SetIconCover(t *testing.T) {
 		}
 	})
 }
+
+// TestGetPropertyItem_PaginatesAndEscapes guards issue #104. GET
+// /v1/pages/{id} caps page and person references at 25 per property and
+// gives no signal when it truncates, so a 40-entry relation reported its
+// first 25 as though they were everything.
+//
+// The escaping half matters as much: Notion property ids are opaque and
+// routinely contain reserved characters — a real one observed live was
+// "Ln%3EX", i.e. "Ln>X". Interpolating unescaped addresses a different
+// property or 404s.
+func TestGetPropertyItem_PaginatesAndEscapes(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.EscapedPath())
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("start_cursor") == "" {
+			_, _ = w.Write([]byte(`{"object":"list","type":"property_item","has_more":true,
+				"next_cursor":"c2","results":[{"object":"property_item","type":"relation"},
+				{"object":"property_item","type":"relation"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"object":"list","type":"property_item","has_more":false,
+			"next_cursor":"","results":[{"object":"property_item","type":"relation"}]}`))
+	}))
+	defer srv.Close()
+
+	pc := NewPageClient(NewClient("k", WithBaseURL(srv.URL)))
+	items, err := pc.GetPropertyItem(context.Background(), "pageID", "Ln>X")
+	if err != nil {
+		t.Fatalf("GetPropertyItem: %v", err)
+	}
+	if len(items) != 3 {
+		t.Errorf("got %d items, want 3 across both pages", len(items))
+	}
+	if len(paths) != 2 {
+		t.Fatalf("made %d requests, want 2 (pagination not followed)", len(paths))
+	}
+	if !strings.Contains(paths[0], "Ln%3EX") {
+		t.Errorf("property id was not URL-escaped: %s", paths[0])
+	}
+}
+
+// TestGetPropertyItem_SimplePropertyReturnsTheItem covers the other response
+// shape: a title/number/checkbox answers with a single property_item rather
+// than a results list.
+func TestGetPropertyItem_SimplePropertyReturnsTheItem(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"property_item","type":"number","has_more":false,
+			"results":[],"property_item":{"type":"number","number":42}}`))
+	}))
+	defer srv.Close()
+
+	items, err := NewPageClient(NewClient("k", WithBaseURL(srv.URL))).
+		GetPropertyItem(context.Background(), "pageID", "num")
+	if err != nil {
+		t.Fatalf("GetPropertyItem: %v", err)
+	}
+	if len(items) != 1 || !strings.Contains(string(items[0]), "42") {
+		t.Errorf("simple property = %v, want the single property_item", items)
+	}
+}
+
+// TestTruncatedProperties flags the properties sitting at the cap. Notion
+// gives no truncation flag, so this is explicitly a heuristic — "exactly 25"
+// and "truncated at 25" are indistinguishable on the page response, which is
+// why the warning it drives is phrased as "may be truncated".
+func TestTruncatedProperties(t *testing.T) {
+	mk := func(kind string, n int) map[string]interface{} {
+		items := make([]interface{}, n)
+		return map[string]interface{}{kind: items}
+	}
+	props := map[string]interface{}{
+		"Clients":  mk("relation", 25),
+		"Owners":   mk("people", 30),
+		"Few":      mk("relation", 3),
+		"Name":     map[string]interface{}{"title": []interface{}{}},
+		"NotAProp": "scalar",
+	}
+	got := TruncatedProperties(props)
+	if len(got) != 2 || got[0] != "Clients" || got[1] != "Owners" {
+		t.Errorf("TruncatedProperties = %v, want [Clients Owners] sorted", got)
+	}
+	if len(TruncatedProperties(map[string]interface{}{})) != 0 {
+		t.Error("empty properties should flag nothing")
+	}
+}
