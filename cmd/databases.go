@@ -303,7 +303,7 @@ func printDatabase(w io.Writer, db *utils.Database) {
 	}
 	b, err := json.MarshalIndent(db, "", "  ")
 	if err != nil {
-		color.Red("Error formatting database: %v", err)
+		fmt.Fprintln(os.Stderr, color.RedString("Error formatting database: %v", err))
 		return
 	}
 	fmt.Fprintln(w, string(b))
@@ -327,7 +327,7 @@ func printQueryResults(w io.Writer, pages []utils.Page) {
 	for _, p := range pages {
 		b, err := json.Marshal(p)
 		if err != nil {
-			color.Red("Error formatting page %s: %v", p.ID, err)
+			fmt.Fprintln(os.Stderr, color.RedString("Error formatting page %s: %v", p.ID, err))
 			continue
 		}
 		fmt.Fprintln(w, string(b))

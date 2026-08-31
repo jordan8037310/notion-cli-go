@@ -195,6 +195,21 @@ func jsonErrorOr(cmd *cobra.Command, err error) error {
 	return err
 }
 
+// errorLine writes a human-readable error to the command's STDERR.
+//
+// The commands that print failures with color.Red were sending them to
+// stdout, because fatih/color writes there by default. Three consequences
+// (issue #100): `notioncli blocks list > out.txt` swallowed the error into
+// the file and showed the user nothing; `2>/dev/null` failed to suppress
+// errors while `>/dev/null` did; and any wrapper capturing stderr for
+// diagnostics got an empty string on failure.
+//
+// Routing through cmd.ErrOrStderr() also makes the output capturable in
+// tests, which is why the streams were never asserted before.
+func errorLine(cmd *cobra.Command, format string, args ...interface{}) {
+	fmt.Fprintln(cmd.ErrOrStderr(), color.RedString(format, args...))
+}
+
 // emitOK emits a minimal success envelope for commands that have no
 // natural result payload (delete, archive, unarchive, check, uncheck).
 // The envelope is {"ok":true, ...extras} so consumers can grep or jq on

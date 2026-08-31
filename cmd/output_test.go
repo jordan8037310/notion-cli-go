@@ -1070,3 +1070,50 @@ func TestEmitError_PlainErrorStaysMinimal(t *testing.T) {
 		t.Errorf("plain error envelope = %v, want just {error}", env)
 	}
 }
+
+// TestErrorsGoToStderrNotStdout guards issue #100. The blocks commands
+// printed failures with color.Red, which fatih/color writes to STDOUT. So
+// `notioncli blocks list > out.txt` swallowed the error into the file and
+// showed the user nothing, while `2>/dev/null` failed to suppress errors
+// and `>/dev/null` did — the exact inverse of every other CLI.
+func TestErrorsGoToStderrNotStdout(t *testing.T) {
+	withCmdEnv(t)
+	// A page id that the mock server does not know: the listing fails.
+	t.Setenv("NOTION_PAGE_ID", "definitelyMissingPage")
+
+	blocksListType = ""
+	resetRootCmdArgs()
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"blocks", "list"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected an error listing a nonexistent page")
+	}
+
+	if stderr.Len() == 0 {
+		t.Error("failure wrote nothing to stderr; a wrapper capturing stderr for diagnostics gets nothing")
+	}
+	if strings.Contains(stdout.String(), "Error") {
+		t.Errorf("error text leaked onto stdout, where a redirect would swallow it:\n%s", stdout.String())
+	}
+}
+
+// TestErrorLineWritesToCommandStderr covers the helper directly, including
+// that it is capturable — which is why the streams could not be asserted
+// before.
+func TestErrorLineWritesToCommandStderr(t *testing.T) {
+	c := &cobra.Command{}
+	var out, errBuf bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&errBuf)
+
+	errorLine(c, "boom: %v", errors.New("inner"))
+
+	if !strings.Contains(errBuf.String(), "boom: inner") {
+		t.Errorf("stderr = %q, want the formatted message", errBuf.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout should stay clean, got %q", out.String())
+	}
+}
