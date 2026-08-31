@@ -46,8 +46,10 @@ Examples:
   notioncli databases update <data-source-id> --properties-json ./schema.json
 
 Note: a schema belongs to a DATA SOURCE, not to the database container.
-Pass a data source id when using --properties-json; "databases data-sources
-<db-id>" lists them.`,
+--properties-json accepts either id — a database id is resolved to its data
+source automatically — but a database holding several data sources is
+ambiguous, and the error will name them so you can pick one. "databases
+data-sources <db-id>" lists them too.`,
 }
 
 // newDatabaseClient builds a DatabaseClient using the CLI's standard config
@@ -276,7 +278,14 @@ var databasesUpdateCmd = &cobra.Command{
 		if globalJSON {
 			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), db))
 		}
-		color.Green("Updated database %s", db.ID)
+		// A schema update is answered by the data source, not the
+		// container, so name whichever resource actually replied rather
+		// than always claiming "database".
+		what := "database"
+		if db.Object == "data_source" {
+			what = "data source"
+		}
+		color.Green("Updated %s %s", what, db.ID)
 		printDatabase(cmd.OutOrStdout(), db)
 		return nil
 	},
@@ -357,5 +366,5 @@ func init() {
 	databasesCreateCmd.Flags().StringVar(&dbCreatePropsFile, "properties-json", "", "Path to a JSON file with the database schema")
 
 	databasesUpdateCmd.Flags().StringVar(&dbUpdateTitle, "title", "", "New title for the database")
-	databasesUpdateCmd.Flags().StringVar(&dbUpdatePropsFile, "properties-json", "", "Path to a JSON file with the updated schema. Requires a DATA SOURCE id (see the data-sources subcommand), not a database id")
+	databasesUpdateCmd.Flags().StringVar(&dbUpdatePropsFile, "properties-json", "", "Path to a JSON file with the updated schema. Accepts a database or data source id; a multi-source database must be disambiguated")
 }

@@ -210,6 +210,20 @@ func newDatabasesDispatchServer(t *testing.T) *databasesDispatchServer {
 			writeDispatchDatabase(w, "newDBID")
 		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/databases/"):
 			writeDispatchDatabase(w, strings.TrimPrefix(r.URL.Path, "/databases/"))
+		// Schema writes land on the data source (2025-09-03 onward).
+		// "dsID" is the only data source this fixture knows; anything
+		// else gets the 404 a wrong-namespace id really receives.
+		case strings.HasPrefix(r.URL.Path, "/data_sources/"):
+			id := strings.TrimPrefix(r.URL.Path, "/data_sources/")
+			if id != "dsID" {
+				http.Error(w, `{"object":"error","status":404,"code":"object_not_found"}`, http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"data_source","id":"dsID","in_trash":false,
+				"title":[{"type":"text","plain_text":"DS","text":{"content":"DS"}}],
+				"parent":{"type":"database_id","database_id":"dbID"},
+				"properties":{"Name":{"type":"title","title":{}}}}`))
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
@@ -579,5 +593,43 @@ func TestDatabasesQueryDataSourceFlag(t *testing.T) {
 	}
 	if strings.Contains(queried, "db-container") {
 		t.Errorf("query used the positional container id %q despite --data-source", queried)
+	}
+}
+
+// TestDatabasesUpdateSchemaDispatch is the cmd-layer guard for the endpoint
+// split: `databases update <ds-id> --properties-json` must PATCH the data
+// source and must NOT touch the database endpoint, whose 200-and-ignore
+// behaviour is what silently dropped schemas before.
+func TestDatabasesUpdateSchemaDispatch(t *testing.T) {
+	d := withDatabasesEnv(t)
+
+	dir := t.TempDir()
+	schema := filepath.Join(dir, "schema.json")
+	if err := os.WriteFile(schema, []byte(`{"Priority":{"select":{}}}`), 0o600); err != nil {
+		t.Fatalf("write schema: %v", err)
+	}
+
+	resetDatabasesFlags()
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"databases", "update", "dsID", "--properties-json", schema})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if got := d.count("PATCH /data_sources/dsID"); got != 1 {
+		t.Errorf("PATCH /data_sources/dsID fired %d times, want 1", got)
+	}
+	if got := d.count("PATCH /databases/dsID"); got != 0 {
+		t.Errorf("PATCH /databases/dsID fired %d times, want 0 — that endpoint ignores properties", got)
+	}
+	// The rendered payload must be the data source that actually answered,
+	// not a database envelope. (The green banner itself is written by
+	// color.Green straight to os.Stdout rather than cmd.OutOrStdout, so it
+	// is not captured here — see issue #100.)
+	if !strings.Contains(out.String(), `"object": "data_source"`) {
+		t.Errorf("expected the data_source envelope in the output, got: %s", out.String())
 	}
 }

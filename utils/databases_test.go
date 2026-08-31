@@ -105,50 +105,122 @@ func (d *dbMockServer) handle(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(page)
 
+	// Database and data source ids are DISJOINT namespaces on the live
+	// API — presenting one at the other's endpoint fails. The mock
+	// enforces that, because a server answering any id at both surfaces
+	// lets a test assert a request pair Notion can never serve.
+	//
+	// Fixture: container "dbID" holds one data source "dsID".
+	// "multiDB" holds two ("dsA", "dsB") for the ambiguity path.
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/databases/"):
 		id := strings.TrimPrefix(r.URL.Path, "/databases/")
-		writeJSONDatabase(w, id, "Source database")
+		switch {
+		case d.isDataSource(id):
+			writeJSONNotFound(w)
+		case id == "multiDB":
+			writeJSONContainer(w, id, "Multi source", []map[string]string{
+				{"id": "dsA", "name": "Source A"}, {"id": "dsB", "name": "Source B"},
+			})
+		default:
+			writeJSONContainer(w, id, "Source database", []map[string]string{
+				{"id": d.dataSourceFor(id), "name": "Default"},
+			})
+		}
+
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/data_sources/"):
+		id := strings.TrimPrefix(r.URL.Path, "/data_sources/")
+		if !d.isDataSource(id) {
+			writeJSONNotFound(w)
+			return
+		}
+		writeJSONDataSource(w, id, "Data source")
 
 	case r.Method == http.MethodPost && r.URL.Path == "/databases":
-		writeJSONDatabase(w, "newDBID", "Created")
+		writeJSONContainer(w, "newDBID", "Created", []map[string]string{{"id": "newDSID", "name": "Created"}})
 
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/databases/"):
 		id := strings.TrimPrefix(r.URL.Path, "/databases/")
-		writeJSONDatabase(w, id, "Updated")
+		if d.isDataSource(id) {
+			// A data source id at the database endpoint 404s.
+			writeJSONNotFound(w)
+			return
+		}
+		writeJSONContainer(w, id, "Updated", []map[string]string{{"id": d.dataSourceFor(id), "name": "Default"}})
 
 	// Schema updates go to the data source, not the database container
 	// (Notion-Version 2025-09-03 onward).
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/data_sources/"):
 		id := strings.TrimPrefix(r.URL.Path, "/data_sources/")
-		writeJSONDatabase(w, id, "Schema updated")
+		if !d.isDataSource(id) {
+			// A database id at the data-source endpoint returns
+			// 400 invalid_request_url, per isQueryFallbackTrigger's
+			// live-derived note.
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"object":"error","status":400,"code":"invalid_request_url","message":"Invalid request URL"}`))
+			return
+		}
+		writeJSONDataSource(w, id, "Schema updated")
 
 	default:
 		http.Error(w, `{"code":"not_found"}`, http.StatusNotFound)
 	}
 }
 
-func writeJSONDatabase(w http.ResponseWriter, id, title string) {
-	payload := map[string]interface{}{
-		"object":           "database",
-		"id":               id,
+// isDataSource reports whether the fixture treats id as a data source.
+func (d *dbMockServer) isDataSource(id string) bool {
+	switch id {
+	case "dsID", "dsA", "dsB", "newDSID":
+		return true
+	}
+	return strings.HasPrefix(id, "ds")
+}
+
+// dataSourceFor returns the data source the fixture nests under a container.
+func (d *dbMockServer) dataSourceFor(id string) string {
+	if id == "dbID" {
+		return "dsID"
+	}
+	return "ds-of-" + id
+}
+
+func writeJSONNotFound(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(`{"object":"error","status":404,"code":"object_not_found","message":"Could not find object"}`))
+}
+
+// writeJSONContainer emits the 2025-09-03+ database CONTAINER envelope:
+// data_sources present, properties absent. Confirmed live — see the probe
+// notes on PR #111.
+func writeJSONContainer(w http.ResponseWriter, id, title string, ds []map[string]string) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"object": "database", "id": id, "in_trash": false,
+		"url":              "https://notion.so/" + id,
 		"created_time":     "2026-04-22T10:00:00.000Z",
 		"last_edited_time": "2026-04-22T10:00:00.000Z",
-		"in_trash":         false,
-		"url":              "https://notion.so/" + id,
 		"title": []map[string]interface{}{
-			{
-				"type":       "text",
-				"plain_text": title,
-				"text":       map[string]interface{}{"content": title},
-			},
+			{"type": "text", "plain_text": title, "text": map[string]interface{}{"content": title}},
 		},
-		"parent": map[string]interface{}{"type": "page_id", "page_id": "parentPageID"},
-		"properties": map[string]interface{}{
-			"Name": map[string]interface{}{"id": "title", "name": "Name", "type": "title"},
-		},
-	}
+		"parent":       map[string]interface{}{"type": "page_id", "page_id": "parentPageID"},
+		"data_sources": ds,
+	})
+}
+
+// writeJSONDataSource emits the data SOURCE envelope: object "data_source",
+// a database_id parent, properties present, no data_sources array.
+func writeJSONDataSource(w http.ResponseWriter, id, title string) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(payload)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"object": "data_source", "id": id, "in_trash": false,
+		"url":              "https://notion.so/" + id,
+		"created_time":     "2026-04-22T10:00:00.000Z",
+		"last_edited_time": "2026-04-22T10:00:00.000Z",
+		"title": []map[string]interface{}{
+			{"type": "text", "plain_text": title, "text": map[string]interface{}{"content": title}},
+		},
+		"parent":     map[string]interface{}{"type": "database_id", "database_id": "dbID"},
+		"properties": map[string]interface{}{"Name": map[string]interface{}{"type": "title", "title": map[string]interface{}{}}},
+	})
 }
 
 // -------- Tests --------
@@ -291,69 +363,154 @@ func TestDatabases_Update_TitleOnly(t *testing.T) {
 	}
 }
 
-func TestDatabases_Update_PropertiesOnly(t *testing.T) {
+// TestDatabases_Update_SchemaGoesToDataSource pins the endpoint split.
+// PATCH /v1/databases/{id} no longer accepts `properties` at all — verified
+// against the live API, it returns 200 and silently ignores the key, which
+// is exactly how the original bug hid. The schema must go to the data
+// source.
+func TestDatabases_Update_SchemaGoesToDataSource(t *testing.T) {
 	m := newDBMockServer(t)
 	dc := NewDatabaseClient(m.client())
 
-	_, err := dc.Update(context.Background(), "dsID", UpdateDatabaseRequest{
+	db, err := dc.Update(context.Background(), "dsID", UpdateDatabaseRequest{
 		Properties: map[string]DatabaseProperty{
 			"Priority": {"select": map[string]interface{}{}},
 		},
 	})
 	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	var patches []dbRecordedCall
+	for _, c := range m.callsSnapshot() {
+		if c.method == http.MethodPatch {
+			patches = append(patches, c)
+		}
+	}
+	// Exactly ONE mutating call. Two would risk a half-applied write.
+	if len(patches) != 1 {
+		t.Fatalf("issued %d PATCH calls, want exactly 1: %+v", len(patches), patches)
+	}
+	if patches[0].path != "/data_sources/dsID" {
+		t.Errorf("schema PATCH hit %s, want /data_sources/dsID", patches[0].path)
+	}
+	if _, ok := patches[0].body["properties"]; !ok {
+		t.Error("expected properties in body")
+	}
+	if _, ok := patches[0].body["title"]; ok {
+		t.Error("properties-only update should not send a title")
+	}
+	// The response is a data source; callers must be able to tell.
+	if db.Object != "data_source" {
+		t.Errorf("returned Object = %q, want data_source so the caller can report it honestly", db.Object)
+	}
+}
+
+// TestDatabases_Update_TitleAndSchemaIsOneAtomicCall guards the defect the
+// adversarial review of PR #111 found in its own first draft: sending the
+// title to /databases/{id} and the schema to /data_sources/{id} reused one
+// id across two DISJOINT namespaces, so the combination could never fully
+// succeed — and the title committed before the schema call failed, leaving
+// a half-applied update.
+//
+// PATCH /v1/data_sources/{id} accepts `title` alongside `properties`
+// (verified live), so both travel in a single request.
+func TestDatabases_Update_TitleAndSchemaIsOneAtomicCall(t *testing.T) {
+	m := newDBMockServer(t)
+	dc := NewDatabaseClient(m.client())
+
+	// A container id: Update must resolve it to its data source.
+	if _, err := dc.Update(context.Background(), "dbID", UpdateDatabaseRequest{
+		Title:      "Renamed",
+		Properties: map[string]DatabaseProperty{"Priority": {"select": map[string]interface{}{}}},
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	var patches []dbRecordedCall
+	for _, c := range m.callsSnapshot() {
+		if c.method == http.MethodPatch {
+			patches = append(patches, c)
+		}
+	}
+	if len(patches) != 1 {
+		t.Fatalf("issued %d PATCH calls, want exactly 1 (atomic): %+v", len(patches), patches)
+	}
+	if patches[0].path != "/data_sources/dsID" {
+		t.Errorf("PATCH hit %s, want /data_sources/dsID (dbID resolved to its data source)", patches[0].path)
+	}
+	if _, ok := patches[0].body["title"]; !ok {
+		t.Error("the single call must carry the title")
+	}
+	if _, ok := patches[0].body["properties"]; !ok {
+		t.Error("the single call must carry the schema")
+	}
+}
+
+// TestDatabases_Update_TitleOnlyTargetsTheContainer confirms the common
+// case still goes to the database endpoint in one call.
+func TestDatabases_Update_TitleOnlyTargetsTheContainer(t *testing.T) {
+	m := newDBMockServer(t)
+	dc := NewDatabaseClient(m.client())
+
+	if _, err := dc.Update(context.Background(), "dbID", UpdateDatabaseRequest{Title: "Renamed"}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	calls := m.callsSnapshot()
 	if len(calls) != 1 {
-		t.Fatalf("len(calls)=%d want 1", len(calls))
+		t.Fatalf("title-only update made %d calls, want 1: %+v", len(calls), calls)
 	}
-	// PATCH /v1/databases/{id} no longer accepts `properties` at all; the
-	// schema moved to the Update Data Source API (2025-09-03 upgrade
-	// guide). Sending it to the database endpoint is a silent no-op at
-	// best and a 400 at worst.
-	if calls[0].path != "/data_sources/dsID" {
-		t.Errorf("schema update hit %s, want /data_sources/dsID", calls[0].path)
+	if calls[0].path != "/databases/dbID" {
+		t.Errorf("title PATCH hit %s, want /databases/dbID", calls[0].path)
 	}
-	if _, ok := calls[0].body["title"]; ok {
-		t.Error("properties-only update should not include title")
-	}
-	if _, ok := calls[0].body["properties"]; !ok {
-		t.Error("expected properties in body")
+	if _, ok := calls[0].body["properties"]; ok {
+		t.Error("title-only update must not send properties")
 	}
 }
 
-// TestDatabases_Update_TitleAndSchemaSplit pins the two-endpoint split: a
-// request carrying both a database attribute and a schema must issue one
-// PATCH to each surface, because since 2025-09-03 they live in different
-// places.
-func TestDatabases_Update_TitleAndSchemaSplit(t *testing.T) {
+// TestDatabases_Update_TitleOnlyFallsBackToDataSource covers a title
+// update addressed to a data source id: the database endpoint 404s and the
+// call falls back, mirroring Get's probe.
+func TestDatabases_Update_TitleOnlyFallsBackToDataSource(t *testing.T) {
 	m := newDBMockServer(t)
 	dc := NewDatabaseClient(m.client())
 
-	_, err := dc.Update(context.Background(), "someID", UpdateDatabaseRequest{
-		Title: "Renamed",
-		Properties: map[string]DatabaseProperty{
-			"Priority": {"select": map[string]interface{}{}},
-		},
-	})
-	if err != nil {
+	if _, err := dc.Update(context.Background(), "dsID", UpdateDatabaseRequest{Title: "Renamed"}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	calls := m.callsSnapshot()
-	if len(calls) != 2 {
-		t.Fatalf("len(calls)=%d want 2 (one per surface)", len(calls))
+	paths := []string{}
+	for _, c := range m.callsSnapshot() {
+		paths = append(paths, c.path)
 	}
-	if calls[0].path != "/databases/someID" {
-		t.Errorf("first call hit %s, want /databases/someID for the title", calls[0].path)
+	if len(paths) != 2 || paths[0] != "/databases/dsID" || paths[1] != "/data_sources/dsID" {
+		t.Errorf("call sequence = %v, want [/databases/dsID /data_sources/dsID]", paths)
 	}
-	if _, ok := calls[0].body["properties"]; ok {
-		t.Error("the database-attribute call must not carry properties")
+}
+
+// TestDatabases_Update_AmbiguousDataSourceRefuses asserts a multi-source
+// container is rejected rather than guessed at. Silently writing a schema
+// to whichever source sorted first is the same class of plausible-but-wrong
+// result as issue #88 — and unlike #88 it would be a WRITE.
+func TestDatabases_Update_AmbiguousDataSourceRefuses(t *testing.T) {
+	m := newDBMockServer(t)
+	dc := NewDatabaseClient(m.client())
+
+	_, err := dc.Update(context.Background(), "multiDB", UpdateDatabaseRequest{
+		Properties: map[string]DatabaseProperty{"Priority": {"select": map[string]interface{}{}}},
+	})
+	if err == nil {
+		t.Fatal("multi-source container: want an error, got nil")
 	}
-	if calls[1].path != "/data_sources/someID" {
-		t.Errorf("second call hit %s, want /data_sources/someID for the schema", calls[1].path)
+	for _, want := range []string{"ambiguous", "dsA", "dsB", "Source A"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should name the candidates; missing %q in: %v", want, err)
+		}
 	}
-	if _, ok := calls[1].body["title"]; ok {
-		t.Error("the data-source call must not carry title")
+	// Crucially: nothing was written.
+	for _, c := range m.callsSnapshot() {
+		if c.method == http.MethodPatch {
+			t.Errorf("ambiguous resolution must not mutate anything; saw PATCH %s", c.path)
+		}
 	}
 }
 
