@@ -7,6 +7,7 @@ package utils
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -275,41 +276,33 @@ func (d *DatabaseClient) postQuery(ctx context.Context, path string, body map[st
 	return &out, nil
 }
 
-// isQueryFallbackTrigger reports whether err is the kind that should
-// trigger a probe of the OTHER endpoint (data_sources ↔ databases).
-// Two shapes qualify:
+// isQueryFallbackTrigger reports whether err means "right id, wrong
+// endpoint" and so should trigger a probe of the OTHER surface
+// (data_sources ↔ databases). Two conditions qualify:
 //
-//  1. **404 object_not_found** — the id doesn't exist at this endpoint.
-//     Triggered when probing `/data_sources/{id}/query` against a real
-//     legacy database, or when probing `/databases/{id}` against a
-//     real 2026-03-11 data_source.
+//  1. **404 object_not_found** — the id does not exist at this endpoint.
+//     Seen when probing /data_sources/{id}/query against a legacy database,
+//     or /databases/{id} against a 2026-03-11 data source.
 //
-//  2. **400 invalid_request_url** — Notion's response when the URL
-//     pattern doesn't apply to the resource type behind the id (the
-//     id is recognised but as a different object). Distinct from 404:
-//     `/data_sources/{id}/query` against a database id returns 400,
-//     not 404, so the fallback never fired without this branch. This
-//     is the bug behind the "LS-36 reproducer" still failing on the
-//     post-PR-#71 binary.
+//  2. **400 invalid_request_url** — Notion's answer when the URL pattern
+//     does not apply to the object behind the id: recognised, but as a
+//     different type. Distinct from 404, and the reason the fallback never
+//     fired before it was added (the "LS-36 reproducer").
 //
-// utils.decodeInto wraps non-2xx as "unexpected status N: ..."; match
-// the substring rather than a typed status code so the check survives
-// error wrapping by callers.
-//
-// Renamed from isQueryNotFound — old name was too narrow for what we
-// actually need to fall back on.
+// This matches on the typed *APIError rather than on formatted text. It
+// used to substring-match "unexpected status 404" against err.Error(),
+// which coupled control flow to a message format — issue #101's central
+// complaint, and it broke the moment errors became structured. errors.As
+// sees through any caller's wrapping.
 func isQueryFallbackTrigger(err error) bool {
-	if err == nil {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		return false
 	}
-	msg := err.Error()
-	if strings.Contains(msg, "unexpected status 404") {
+	if apiErr.IsNotFound() {
 		return true
 	}
-	if strings.Contains(msg, "unexpected status 400") && strings.Contains(msg, "invalid_request_url") {
-		return true
-	}
-	return false
+	return apiErr.Status == http.StatusBadRequest && apiErr.Code == "invalid_request_url"
 }
 
 // QueryAll walks pagination until the server reports HasMore=false or the

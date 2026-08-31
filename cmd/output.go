@@ -7,6 +7,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -145,8 +146,29 @@ func emitError(w io.Writer, err error) {
 	if err == nil {
 		return
 	}
+	env := map[string]interface{}{"error": err.Error()}
+	// When a Notion API error is anywhere in the chain, hand the consumer
+	// the fields instead of only the sentence. request_id is what Notion
+	// support asks for first, and code is what a script should branch on
+	// rather than substring-matching the message (issue #101).
+	var apiErr *utils.APIError
+	if errors.As(err, &apiErr) {
+		env["status"] = apiErr.Status
+		if apiErr.Code != "" {
+			env["code"] = apiErr.Code
+		}
+		if apiErr.Message != "" {
+			env["message"] = apiErr.Message
+		}
+		if apiErr.RequestID != "" {
+			env["request_id"] = apiErr.RequestID
+		}
+		if apiErr.Suggestion != "" {
+			env["suggestion"] = apiErr.Suggestion
+		}
+	}
 	enc := json.NewEncoder(w)
-	_ = enc.Encode(map[string]string{"error": err.Error()})
+	_ = enc.Encode(env)
 	jsonErrorEmitted = true
 }
 

@@ -310,24 +310,39 @@ func TestFetch_PageProbeNon404Surfaces(t *testing.T) {
 	}
 }
 
-// TestFetch_IsNotFound exercises the helper directly so the wrap-aware
-// branch is covered. The dispatcher relies on the wrapped form because
-// every Get layers its own fmt.Errorf around the underlying decode error.
+// TestFetch_IsNotFound exercises the helper directly. The dispatcher relies
+// on the wrapped form because every Get layers its own fmt.Errorf around the
+// underlying error.
+//
+// The helper now matches the typed *utils.APIError rather than the substring
+// "unexpected status 404". That coupling — control flow reading a rendered
+// message — is what issue #101 was about, and it broke the moment the client
+// started returning structured errors. A plain fmt.Errorf carrying the old
+// text is deliberately NOT a 404 any more: only the real thing counts.
 func TestFetch_IsNotFound(t *testing.T) {
 	if isNotFound(nil) {
 		t.Error("isNotFound(nil) must be false")
 	}
-	plain := fmt.Errorf("unexpected status 404: object_not_found")
-	if !isNotFound(plain) {
-		t.Error("isNotFound: plain 404 error not detected")
+
+	notFound := &utils.APIError{Status: http.StatusNotFound, Code: "object_not_found", Message: "Could not find page"}
+	if !isNotFound(notFound) {
+		t.Error("isNotFound: typed 404 not detected")
 	}
-	wrapped := fmt.Errorf("get page: %w", plain)
-	if !isNotFound(wrapped) {
-		t.Error("isNotFound: wrapped 404 error not detected")
+	if !isNotFound(fmt.Errorf("get page: %w", notFound)) {
+		t.Error("isNotFound: wrapped typed 404 not detected")
 	}
-	other := fmt.Errorf("unexpected status 500: server_error")
-	if isNotFound(other) {
+	if !isNotFound(fmt.Errorf("outer: %w", fmt.Errorf("get page: %w", notFound))) {
+		t.Error("isNotFound: doubly-wrapped typed 404 not detected")
+	}
+
+	serverErr := &utils.APIError{Status: http.StatusInternalServerError, Code: "internal_server_error"}
+	if isNotFound(serverErr) {
 		t.Error("isNotFound: 500 must not be classified as 404")
+	}
+
+	// Prose that merely looks like a 404 must not drive dispatch.
+	if isNotFound(fmt.Errorf("unexpected status 404: object_not_found")) {
+		t.Error("isNotFound: an untyped string must not be treated as a 404")
 	}
 }
 

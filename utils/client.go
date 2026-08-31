@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // NotionAPIVersion is the pinned Notion API version used for every request.
@@ -22,6 +23,14 @@ import (
 // Older responses continue to decode through existing structs; the pre-existing
 // block, page, database, comment, search, and users endpoints are unchanged.
 const NotionAPIVersion = "2026-03-11"
+
+// DefaultTimeout bounds every request. Go's zero-value http.Client has NO
+// timeout, and every call site here passes context.Background(), so before
+// this a stalled connection hung the process forever with no way out but
+// ctrl-C — fatal in a cron or CI context. 60s is generous for Notion's
+// slowest documented path (a large paginated query) while still bounded.
+// Override with WithTimeout. See issue #98.
+const DefaultTimeout = 60 * time.Second
 
 // DefaultBaseURL is the default Notion API base URL. It is exposed so tests
 // and integrators can reason about the default target without reaching into
@@ -42,6 +51,18 @@ type Client struct {
 // Option mutates a Client during construction. Pass Options into NewClient
 // to override defaults.
 type Option func(*Client)
+
+// WithTimeout overrides the per-request timeout. A non-positive duration
+// disables it, which is occasionally what a caller streaming a very large
+// upload wants — but it reinstates the hang, so it must be deliberate.
+func WithTimeout(d time.Duration) Option {
+	return func(c *Client) {
+		if c.httpClient == nil {
+			c.httpClient = &http.Client{}
+		}
+		c.httpClient.Timeout = d
+	}
+}
 
 // WithBaseURL overrides the Notion API base URL. Useful for tests that wire
 // an httptest.Server in front of the client.
@@ -79,7 +100,7 @@ func NewClient(apiKey string, opts ...Option) *Client {
 		baseURL:    DefaultBaseURL,
 		apiKey:     apiKey,
 		apiVersion: NotionAPIVersion,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Timeout: DefaultTimeout},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -167,7 +188,9 @@ func decodeIntoRaw(resp *http.Response, target interface{}) (json.RawMessage, er
 	defer resp.Body.Close()
 	body, readErr := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+		// Structured, not flattened: callers branch on Code via errors.As
+		// and request_id survives for support. See issue #101.
+		return nil, parseAPIError(resp.StatusCode, endpointOf(resp), body)
 	}
 	if readErr != nil {
 		return nil, fmt.Errorf("read response: %w", readErr)
@@ -188,7 +211,7 @@ func expectStatus(resp *http.Response, want int) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != want {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(body))
+		return parseAPIError(resp.StatusCode, endpointOf(resp), body)
 	}
 	return nil
 }
@@ -198,4 +221,14 @@ func expectStatus(resp *http.Response, want int) error {
 // when callers are migrated.
 func defaultCtx() context.Context {
 	return context.Background()
+}
+
+// endpointOf recovers the request path for an error message. The response
+// always carries its Request in practice; the guard keeps a hand-built
+// response in a test from panicking.
+func endpointOf(resp *http.Response) string {
+	if resp == nil || resp.Request == nil || resp.Request.URL == nil {
+		return ""
+	}
+	return resp.Request.URL.Path
 }

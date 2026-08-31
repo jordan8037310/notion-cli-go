@@ -87,7 +87,14 @@ Examples:
 			return jsonErrorOr(cmd, fmt.Errorf("fetch: probe database: %w", dbErr))
 		}
 
-		return jsonErrorOr(cmd, fmt.Errorf("fetch: no page or database found at id %s", id))
+		// Wrap the database probe's error rather than replacing it. Notion
+		// documents object_not_found as "does not exist OR the integration
+		// has not been given access" — a flat "no page or database found"
+		// sends the user hunting for a typo when the page is open in their
+		// browser and simply is not shared. Keeping the cause preserves
+		// that remediation, plus request_id, and lets --json emit the
+		// structured fields (issues #101, #107).
+		return jsonErrorOr(cmd, fmt.Errorf("fetch: no page or database found at id %s: %w", id, dbErr))
 	},
 }
 
@@ -210,14 +217,13 @@ func isNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Walk the wrapped chain so we still recognise 404s after callers
-	// add their own fmt.Errorf("...: %w", err) layers.
-	for e := err; e != nil; e = errors.Unwrap(e) {
-		if strings.Contains(e.Error(), "unexpected status 404") {
-			return true
-		}
-	}
-	return false
+	// Match the typed error rather than its rendered text. This used to
+	// walk the chain looking for the substring "unexpected status 404",
+	// which coupled the page/database dispatch to a message format —
+	// exactly the fragility issue #101 describes. errors.As sees through
+	// any number of fmt.Errorf("...: %w") layers on its own.
+	var apiErr *utils.APIError
+	return errors.As(err, &apiErr) && apiErr.IsNotFound()
 }
 
 func init() {
