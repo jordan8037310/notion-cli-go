@@ -138,12 +138,25 @@ func TestE2E_ErrorsAreDiagnosable(t *testing.T) {
 	if len(lines) != 1 {
 		t.Fatalf("json-mode failure emitted %d lines, want exactly 1 envelope:\n%s", len(lines), out)
 	}
-	var env map[string]string
+	var env map[string]interface{}
 	if err := json.Unmarshal([]byte(lines[0]), &env); err != nil {
 		t.Fatalf("json-mode failure is not an envelope: %v\n%s", err, lines[0])
 	}
-	if env["error"] == "" {
+	if msg, _ := env["error"].(string); msg == "" {
 		t.Error("error envelope carries no message")
+	}
+	// Since issue #101 the envelope carries the structured fields too, so a
+	// consumer can branch on `code` and quote `request_id` to Notion support
+	// instead of parsing an English sentence. request_id in particular is the
+	// first thing support asks for.
+	for _, key := range []string{"status", "code", "request_id"} {
+		if _, ok := env[key]; !ok {
+			t.Errorf("error envelope dropped %q — the structured error contract (#101) has regressed. Got keys %v",
+				key, keysOf(env))
+		}
+	}
+	if code, _ := env["code"].(string); code != "object_not_found" {
+		t.Errorf("code = %q, want object_not_found", code)
 	}
 }
 
