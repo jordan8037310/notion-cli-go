@@ -465,7 +465,7 @@ func printPage(w io.Writer, page *utils.Page) {
 	}
 	b, err := json.MarshalIndent(page, "", "  ")
 	if err != nil {
-		color.Red("Error formatting page: %v", err)
+		fmt.Fprintln(os.Stderr, color.RedString("Error formatting page: %v", err))
 		return
 	}
 	fmt.Fprintln(w, string(b))

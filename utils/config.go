@@ -1,3 +1,7 @@
+// This code is licensed under the Apache License, Version 2.0 (the "License").
+// You may not use this file except in compliance with the License.
+// You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
 package utils
 
 import (
@@ -9,80 +13,70 @@ import (
 	"github.com/joho/godotenv"
 )
 
-func SetAPIConfig() (string, string) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Println("Error getting home directory: ", err)
-		os.Exit(1)
+// loadDotEnvFiles populates the process environment from, in order of
+// decreasing precedence:
+//
+//  1. variables already exported in the environment
+//  2. ./.env in the working directory
+//  3. ~/.config/notioncli/.env
+//
+// godotenv.Load never overwrites a variable that is already set, so simply
+// loading both files in that order yields exactly that precedence.
+//
+// Both loads are best-effort. This used to gate the home-config load on the
+// working-directory load having FAILED, which produced two defects (#99):
+//
+//   - With no .env anywhere, the CLI printed "Error loading .env file" and
+//     called os.Exit(1) BEFORE looking at the environment — so an exported
+//     NOTION_API_KEY was rejected before it was ever read, breaking every
+//     CI, container and shell-export workflow the README documents.
+//   - godotenv.Load returns nil for any parseable file, so an unrelated
+//     ./.env — a Rails app's, say — satisfied the first load and the home
+//     config was silently never read. The CLI then failed as unauthenticated
+//     in a directory that merely happened to contain a dotfile.
+//
+// A missing or unreadable .env is not an error: it is the normal state for
+// anyone who configures the tool through the environment.
+func loadDotEnvFiles() {
+	if wd, err := os.Getwd(); err == nil {
+		_ = godotenv.Load(filepath.Join(wd, ".env"))
 	}
-
-	envPathHomeDir := filepath.Join(homeDir, ".config/notioncli/.env")
-	workingDir, err := os.Getwd()
-	if err != nil {
-		fmt.Println("Error getting current directory: ", err)
-		os.Exit(1)
+	if home, err := os.UserHomeDir(); err == nil {
+		_ = godotenv.Load(filepath.Join(home, ".config", "notioncli", ".env"))
 	}
-
-	envPathWorkingDir := filepath.Join(workingDir, ".env")
-	err = godotenv.Load(envPathWorkingDir)
-
-	if err != nil {
-		// If the env file is not found in the working directory, try to load it from the home directory
-		err = godotenv.Load(envPathHomeDir)
-		if err != nil {
-			fmt.Println("Error loading .env file: ", err)
-			os.Exit(1)
-		}
-	}
-
-	notionAPIKey, ok := os.LookupEnv("NOTION_API_KEY")
-	if !ok {
-		fmt.Println("NOTION_API_KEY environment variable not found")
-		os.Exit(1)
-	}
-	// NOTION_PAGE_ID is no longer required at config-load time: the
-	// persistent --page flag on rootCmd can supply the target page via an
-	// alias or literal id. Callers that still want the env-var fallback
-	// should use the resolvePageID helper in cmd/root.go — it tries
-	// --page first, then NOTION_PAGE_ID, and only then errors out. Here
-	// we simply return whatever happens to be in the environment
-	// (possibly empty) so tests and non-page-scoped commands keep working.
-	pageID := os.Getenv("NOTION_PAGE_ID")
-	return notionAPIKey, pageID
 }
 
+// SetAPIConfig resolves the Notion credential and the optional default page.
+//
+// It returns an empty api key rather than exiting when no credential can be
+// found; every caller already treats "" as ErrMissingAPIKey. A library must
+// not call os.Exit — it gave the CLI no way to report the failure as JSON,
+// no way for a test to exercise the path, and printed to stdout, where a
+// --json consumer would have parsed it as data.
+//
+// NOTION_PAGE_ID is not required here: the persistent --page flag can supply
+// the target, so resolvePageID in cmd/root.go owns that precedence.
+func SetAPIConfig() (string, string) {
+	loadDotEnvFiles()
+	return os.Getenv("NOTION_API_KEY"), os.Getenv("NOTION_PAGE_ID")
+}
+
+// GetLocalTimeZone resolves LOCAL_TIMEZONE into a *time.Location.
+//
+// Unset is not fatal — it falls back to the host's local zone, which is what
+// a user without configuration means. Previously this required a .env file
+// to exist at all and hard-exited when none did, so `blocks list` was
+// unusable on a machine configured purely through the environment.
 func GetLocalTimeZone() (*time.Location, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Println("Error getting home directory: ", err)
-		os.Exit(1)
-	}
+	loadDotEnvFiles()
 
-	envPathHomeDir := filepath.Join(homeDir, ".config/notioncli/.env")
-	workingDir, err := os.Getwd()
-	if err != nil {
-		fmt.Println("Error getting current directory: ", err)
-		os.Exit(1)
+	name, ok := os.LookupEnv("LOCAL_TIMEZONE")
+	if !ok || name == "" {
+		return time.Local, nil
 	}
-
-	envPathWorkingDir := filepath.Join(workingDir, ".env")
-	err = godotenv.Load(envPathWorkingDir)
-
+	location, err := time.LoadLocation(name)
 	if err != nil {
-		// If the env file is not found in the working directory, try to load it from the home directory
-		err = godotenv.Load(envPathHomeDir)
-		if err != nil {
-			fmt.Println("Error loading .env file: ", err)
-			os.Exit(1)
-		}
-	}
-	localTimeZone, ok := os.LookupEnv("LOCAL_TIMEZONE")
-	if !ok {
-		return nil, fmt.Errorf("LOCAL_TIMEZONE environment variable not found")
-	}
-	location, err := time.LoadLocation(localTimeZone)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("LOCAL_TIMEZONE %q is not a valid IANA zone: %w", name, err)
 	}
 	return location, nil
 }

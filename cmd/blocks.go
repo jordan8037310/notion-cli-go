@@ -111,7 +111,7 @@ var blocksListCmd = &cobra.Command{
 		localTimezone, err := utils.GetLocalTimeZone()
 		if err != nil {
 			wrapped := fmt.Errorf("blocks list: resolve local time zone: %w", err)
-			color.Red("Error getting timezone: %v", err)
+			errorLine(cmd, "Error getting timezone: %v", err)
 			return wrapped
 		}
 
@@ -129,7 +129,7 @@ var blocksListCmd = &cobra.Command{
 		)
 		if err != nil {
 			wrapped := fmt.Errorf("blocks list: %w", err)
-			color.Red("Error: %v", err)
+			errorLine(cmd, "Error: %v", err)
 			return wrapped
 		}
 
@@ -226,7 +226,7 @@ Examples:
 			if globalJSON {
 				return jsonErrorOr(cmd, err)
 			}
-			color.Red("Error: %v", err)
+			errorLine(cmd, "Error: %v", err)
 			return err
 		}
 
@@ -235,7 +235,7 @@ Examples:
 			if globalJSON {
 				return jsonErrorOr(cmd, err)
 			}
-			color.Red("Error: %v", err)
+			errorLine(cmd, "Error: %v", err)
 			return err
 		}
 
@@ -255,7 +255,7 @@ Examples:
 				if globalJSON {
 					return jsonErrorOr(cmd, wrapped)
 				}
-				color.Red("Error: %v", wrapped)
+				errorLine(cmd, "Error: %v", wrapped)
 				return wrapped
 			}
 			rt, err := utils.ParseRichTextJSON(raw)
@@ -264,7 +264,7 @@ Examples:
 				if globalJSON {
 					return jsonErrorOr(cmd, wrapped)
 				}
-				color.Red("Error: %v", wrapped)
+				errorLine(cmd, "Error: %v", wrapped)
 				return wrapped
 			}
 			if err := utils.AddRichTextBlock(notionAPIKey, pageID, blockType, rt, blocksAddOptions()...); err != nil {
@@ -272,7 +272,7 @@ Examples:
 				if globalJSON {
 					return jsonErrorOr(cmd, wrapped)
 				}
-				color.Red("Error adding block: %v", err)
+				errorLine(cmd, "Error adding block: %v", err)
 				return wrapped
 			}
 			if globalJSON {
@@ -295,7 +295,7 @@ Examples:
 			if globalJSON {
 				return jsonErrorOr(cmd, wrapped)
 			}
-			color.Red("Error adding block: %v", err)
+			errorLine(cmd, "Error adding block: %v", err)
 			return wrapped
 		}
 
@@ -370,7 +370,7 @@ Example:
 			if globalJSON {
 				return jsonErrorOr(cmd, wrapped)
 			}
-			color.Red("Error: '%s' is not a valid number", args[0])
+			errorLine(cmd, "Error: '%s' is not a valid number", args[0])
 			return wrapped
 		}
 
@@ -385,7 +385,7 @@ Example:
 			if globalJSON {
 				return jsonErrorOr(cmd, wrapped)
 			}
-			color.Red("Error deleting block: %v", err)
+			errorLine(cmd, "Error deleting block: %v", err)
 			return wrapped
 		}
 
