@@ -136,7 +136,11 @@ notioncli blocks delete 5
 - `comments list` / `comments create`: Read and post comments.
 - `users list` / `users get <id>` / `users whoami`: Workspace users and the
   current integration.
-- `views create` / `views update`: Manage data source views.
+- `views list <data-source-id>` / `views get <view-id>`: Discover views. The list
+  endpoint returns ids only; `views get` shows name, type and config.
+- `views create <database-id> --data-source <ds-id>` / `views update <view-id>`:
+  Manage data source views. A view reads a data source and belongs to a database
+  container, and Notion requires both ids.
 - `teams`: Workspace teams (see Known Limitations).
 
 ### Global Flags

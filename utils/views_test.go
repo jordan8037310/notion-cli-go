@@ -28,7 +28,14 @@ func newViewsMock(t *testing.T, bodies *[]string) *httptest.Server {
 		}
 
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/data_sources/db-id/views":
+		// The fictional path this client used to call. Notion answers it
+		// with 400 invalid_request_url — keep the mock honest so a
+		// regression to it fails loudly (issue #102).
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/views") && r.URL.Path != "/views":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"object":"error","status":400,"code":"invalid_request_url","message":"Invalid request URL."}`))
+
+		case r.Method == http.MethodPost && r.URL.Path == "/views":
 			writeJSON(w, View{
 				Object: "view",
 				ID:     "view-123",
@@ -69,9 +76,10 @@ func TestViews_Create_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	req := CreateViewRequest{
-		DatabaseID: "db-id",
-		Name:       "My View",
-		Type:       "table",
+		DatabaseID:   "db-id",
+		DataSourceID: "ds-id",
+		Name:         "My View",
+		Type:         "table",
 	}
 	got, err := newViewClient(srv).Create(context.Background(), req)
 	if err != nil {
@@ -83,10 +91,15 @@ func TestViews_Create_HappyPath(t *testing.T) {
 	if len(bodies) != 1 {
 		t.Fatalf("expected 1 request, got %d", len(bodies))
 	}
-	// The wire body must NOT include database_id (that's a path param)
-	// but must include name and type.
-	if strings.Contains(bodies[0], "database_id") {
-		t.Errorf("create body should not include database_id: %s", bodies[0])
+	// Both ids travel in the BODY, not the path. Notion requires
+	// data_source_id plus exactly one of database_id / view_id /
+	// create_database — verified live, the validation_error names all
+	// three. The old client put the id in the path and sent neither,
+	// which 400'd every time (issue #102).
+	for _, want := range []string{`"data_source_id":"ds-id"`, `"database_id":"db-id"`} {
+		if !strings.Contains(bodies[0], want) {
+			t.Errorf("create body missing %s: %s", want, bodies[0])
+		}
 	}
 	if !strings.Contains(bodies[0], `"name":"My View"`) {
 		t.Errorf("create body missing name: %s", bodies[0])
@@ -105,10 +118,11 @@ func TestViews_Create_WithConfig(t *testing.T) {
 
 	cfg := json.RawMessage(`{"sort":"asc","filter":{"status":"done"}}`)
 	req := CreateViewRequest{
-		DatabaseID: "db-id",
-		Name:       "My View",
-		Type:       "table",
-		Config:     cfg,
+		DatabaseID:   "db-id",
+		DataSourceID: "ds-id",
+		Name:         "My View",
+		Type:         "table",
+		Config:       cfg,
 	}
 	if _, err := newViewClient(srv).Create(context.Background(), req); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -128,7 +142,7 @@ func TestViews_Create_AllValidTypes(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			req := CreateViewRequest{DatabaseID: "d", Name: "n", Type: vt}
+			req := CreateViewRequest{DatabaseID: "d", DataSourceID: "ds-id", Name: "n", Type: vt}
 			if _, err := newViewClient(srv).Create(context.Background(), req); err != nil {
 				t.Errorf("Create(%s): %v", vt, err)
 			}
@@ -146,10 +160,11 @@ func TestViews_Create_ValidationErrors(t *testing.T) {
 		req     CreateViewRequest
 		wantSub string
 	}{
-		{"missing database_id", CreateViewRequest{Name: "n", Type: "table"}, "database_id"},
-		{"missing name", CreateViewRequest{DatabaseID: "d", Type: "table"}, "name"},
-		{"missing type", CreateViewRequest{DatabaseID: "d", Name: "n"}, "type is required"},
-		{"invalid type", CreateViewRequest{DatabaseID: "d", Name: "n", Type: "bogus"}, "invalid type"},
+		{"missing data source", CreateViewRequest{DatabaseID: "d", Name: "n", Type: "table"}, "--data-source is required"},
+		{"missing database_id", CreateViewRequest{DataSourceID: "ds-id", Name: "n", Type: "table"}, "database_id"},
+		{"missing name", CreateViewRequest{DatabaseID: "d", DataSourceID: "ds-id", Type: "table"}, "name"},
+		{"missing type", CreateViewRequest{DatabaseID: "d", DataSourceID: "ds-id", Name: "n"}, "type is required"},
+		{"invalid type", CreateViewRequest{DatabaseID: "d", DataSourceID: "ds-id", Name: "n", Type: "bogus"}, "invalid type"},
 	}
 
 	for _, tt := range tests {
@@ -172,7 +187,7 @@ func TestViews_Create_ValidationErrors(t *testing.T) {
 // validation.
 func TestViews_Create_MissingAPIKey(t *testing.T) {
 	client := NewViewClient(NewClient("", WithBaseURL("http://127.0.0.1:0")))
-	req := CreateViewRequest{DatabaseID: "db-id", Name: "n", Type: "table"}
+	req := CreateViewRequest{DatabaseID: "db-id", DataSourceID: "ds-id", Name: "n", Type: "table"}
 	_, err := client.Create(context.Background(), req)
 	if err == nil {
 		t.Fatal("Create: want error for empty API key")
@@ -270,7 +285,7 @@ func TestViews_Create_APIError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	req := CreateViewRequest{DatabaseID: "d", Name: "n", Type: "table"}
+	req := CreateViewRequest{DatabaseID: "d", DataSourceID: "ds-id", Name: "n", Type: "table"}
 	_, err := newViewClient(srv).Create(context.Background(), req)
 	if err == nil {
 		t.Fatal("Create: want error on 401")
@@ -283,11 +298,11 @@ func TestViews_Create_APIError(t *testing.T) {
 // TestValidate_CreateViewRequest is a direct exercise of the request's
 // Validate method so gap-check sees coverage for the exported method.
 func TestValidate_CreateViewRequest(t *testing.T) {
-	ok := CreateViewRequest{DatabaseID: "d", Name: "n", Type: "board"}
+	ok := CreateViewRequest{DatabaseID: "d", DataSourceID: "ds-id", Name: "n", Type: "board"}
 	if err := ok.Validate(); err != nil {
 		t.Errorf("Validate(%+v) = %v, want nil", ok, err)
 	}
-	bad := CreateViewRequest{DatabaseID: "d", Name: "n", Type: "nope"}
+	bad := CreateViewRequest{DatabaseID: "d", DataSourceID: "ds-id", Name: "n", Type: "nope"}
 	if err := bad.Validate(); err == nil {
 		t.Errorf("Validate(%+v) = nil, want error", bad)
 	}
@@ -310,5 +325,115 @@ func TestValidate_UpdateViewRequest(t *testing.T) {
 	}
 	if err := (UpdateViewRequest{}).Validate(); err == nil {
 		t.Errorf("Validate empty: want error, got nil")
+	}
+}
+
+// TestViews_Create_UsesTheRealEndpoint is the regression guard for #102.
+// The client posted to /v1/data_sources/{id}/views, a path that does not
+// exist — the live API answers it with 400 invalid_request_url, so
+// `views create` failed 100% of the time while the unit tests passed
+// against the invented shape. The mock now rejects that path the way
+// Notion does, so a regression fails loudly.
+func TestViews_Create_UsesTheRealEndpoint(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.URL.Path != "/views" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"object":"error","status":400,"code":"invalid_request_url"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"view","id":"v1","name":"n","type":"table","data_source_id":"ds-id"}`))
+	}))
+	defer srv.Close()
+
+	vc := NewViewClient(NewClient("k", WithBaseURL(srv.URL)))
+	view, err := vc.Create(context.Background(), CreateViewRequest{
+		DatabaseID: "db-id", DataSourceID: "ds-id", Name: "n", Type: "table",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if gotPath != "/views" {
+		t.Errorf("posted to %q, want /views", gotPath)
+	}
+	if view.DataSourceID != "ds-id" {
+		t.Errorf("response data_source_id not decoded: %+v", view)
+	}
+}
+
+// TestViews_ListPaginates guards the other half of issue #103: `views
+// update` needed a view id the CLI gave no way to obtain. The endpoint is
+// paginated, and reading only the first page is the defect behind #55, #57
+// and #108 — so List walks it.
+func TestViews_ListPaginates(t *testing.T) {
+	var cursors []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cursors = append(cursors, r.URL.Query().Get("start_cursor"))
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("start_cursor") == "" {
+			_, _ = w.Write([]byte(`{"object":"list","has_more":true,"next_cursor":"c2",
+				"results":[{"object":"view","id":"v1","name":"A","type":"table"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"object":"list","has_more":false,"next_cursor":"",
+			"results":[{"object":"view","id":"v2","name":"B","type":"board"}]}`))
+	}))
+	defer srv.Close()
+
+	vc := NewViewClient(NewClient("k", WithBaseURL(srv.URL)))
+	views, err := vc.List(context.Background(), "ds-id")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(views) != 2 {
+		t.Fatalf("List returned %d views, want 2 across both pages: %+v", len(views), views)
+	}
+	if len(cursors) != 2 || cursors[0] != "" || cursors[1] != "c2" {
+		t.Errorf("cursor sequence = %v, want [\"\" \"c2\"]", cursors)
+	}
+}
+
+// TestViews_ListEmptyIsNotNil keeps the JSON contract from #72: an empty
+// result must encode as [] rather than null.
+func TestViews_ListEmptyIsNotNil(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","has_more":false,"results":[]}`))
+	}))
+	defer srv.Close()
+
+	views, err := NewViewClient(NewClient("k", WithBaseURL(srv.URL))).List(context.Background(), "ds-id")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if views == nil {
+		t.Error("empty List returned nil; it must be a non-nil empty slice so --json emits []")
+	}
+}
+
+// TestViews_Get retrieves a single view.
+func TestViews_Get(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/views/v1" {
+			http.Error(w, `{"code":"not_found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"view","id":"v1","name":"Table","type":"table"}`))
+	}))
+	defer srv.Close()
+
+	vc := NewViewClient(NewClient("k", WithBaseURL(srv.URL)))
+	view, err := vc.Get(context.Background(), "v1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if view.Name != "Table" {
+		t.Errorf("view = %+v", view)
+	}
+	if _, err := vc.Get(context.Background(), ""); err == nil {
+		t.Error("empty id: want error")
 	}
 }

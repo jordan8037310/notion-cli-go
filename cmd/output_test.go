@@ -855,7 +855,7 @@ func TestViews_Create_JSON(t *testing.T) {
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
-	rootCmd.SetArgs([]string{"views", "create", "dbID", "--name", "n", "--type", "table", "--json"})
+	rootCmd.SetArgs([]string{"views", "create", "dbID", "--data-source", "ds-id", "--name", "n", "--type", "table", "--json"})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
