@@ -121,7 +121,11 @@ notioncli blocks delete 5
   id to query.
 - `databases query <id>`: Query a data source, paginating results. Accepts
   `--data-source <id>`, `--filter-json`, `--sort-json` and `--limit`.
-- `databases create` / `databases update <id>`: Create or update a database.
+- `databases create`: Create a database. `--properties-json` defines the schema for
+  its initial data source.
+- `databases update <id>`: Update a title, a schema, or both. A schema update is
+  applied to the data source — pass either id, a database is resolved
+  automatically — and title plus schema travel in a single request.
 
 ### Workspace Commands
 

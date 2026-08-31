@@ -82,24 +82,38 @@ type DataSourceRef struct {
 // A typed property surface can land in a follow-up (see issue #11 envelope).
 type DatabaseProperty = map[string]interface{}
 
-// CreateDatabaseRequest is the body for POST /v1/databases. Parent.PageID is
-// required by the Notion API. Title, when non-empty, is folded into a
-// minimal title rich-text array. Properties maps property name → type
-// descriptor and is required by the Notion API for any non-trivial database;
-// see https://developers.notion.com/reference/create-a-database.
+// CreateDatabaseRequest is the caller-facing shape for POST /v1/databases.
+// Parent.PageID is required. Title, when non-empty, is folded into a minimal
+// title rich-text array.
+//
+// Properties maps property name → type descriptor. NOTE the wire shape does
+// not match this struct: Create nests it under `initial_data_source` because
+// since Notion-Version 2025-09-03 a schema belongs to a database's initial
+// DATA SOURCE, not to the container. Sending a top-level `properties` key
+// returns HTTP 200 and silently drops the schema — verified against the live
+// API, and the reason this once shipped broken.
+//
+// Every field is tagged `json:"-"` for that reason: this struct is never
+// marshalled, Create hand-builds the body. The tags exist to make that
+// explicit rather than leaving a plausible-looking but wrong wire mapping
+// behind for the next reader to trust.
 type CreateDatabaseRequest struct {
-	Parent     PageParent                  `json:"parent"`
+	Parent     PageParent                  `json:"-"`
 	Title      string                      `json:"-"`
-	Properties map[string]DatabaseProperty `json:"properties,omitempty"`
+	Properties map[string]DatabaseProperty `json:"-"`
 }
 
-// UpdateDatabaseRequest is the body for PATCH /v1/databases/{id}. All fields
-// are optional: unset fields are not sent. Title, when non-empty, is folded
-// into a minimal title rich-text array. Properties, when non-nil, updates
-// the schema (rename, add, remove by setting a property to nil).
+// UpdateDatabaseRequest is the caller-facing shape for Update. All fields
+// are optional but at least one must be set.
+//
+// The two fields go to different endpoints — Title to the database
+// container, Properties to a data source — so this struct is never
+// marshalled as-is; Update hand-builds each body and routes it. Both fields
+// are tagged `json:"-"` to keep that honest. See Update's godoc for the
+// routing rules.
 type UpdateDatabaseRequest struct {
 	Title      string                      `json:"-"`
-	Properties map[string]DatabaseProperty `json:"properties,omitempty"`
+	Properties map[string]DatabaseProperty `json:"-"`
 }
 
 // QueryResponse is a single page of database query results. Mirrors the
@@ -343,7 +357,17 @@ func (d *DatabaseClient) Create(ctx context.Context, req CreateDatabaseRequest) 
 		body["title"] = titleRichText(req.Title)
 	}
 	if len(req.Properties) > 0 {
-		body["properties"] = req.Properties
+		// The schema belongs to the database's INITIAL DATA SOURCE, not to
+		// the database itself. Notion's 2025-09-03 upgrade guide is
+		// explicit: "properties for the initial data source you're
+		// creating now go under initial_data_source[properties]".
+		// Top-level title/icon/cover still apply to the database.
+		//
+		// We pin 2026-03-11, so the pre-2025-09-03 top-level shape this
+		// used to send is wrong for every request the CLI makes.
+		body["initial_data_source"] = map[string]interface{}{
+			"properties": req.Properties,
+		}
 	}
 
 	httpReq, err := d.c.newRequest(ctx, http.MethodPost, "/databases", body)
@@ -361,10 +385,34 @@ func (d *DatabaseClient) Create(ctx context.Context, req CreateDatabaseRequest) 
 	return &db, nil
 }
 
-// Update patches a database via PATCH /v1/databases/{id}. Both fields on the
-// request are optional; at least one must be set or Update returns an error
-// (Notion rejects empty-body patches). Title, when non-empty, is folded into
-// a minimal rich-text array on the "title" key.
+// Update patches a database's title and/or its schema.
+//
+// Since Notion-Version 2025-09-03 those live on different resources: the
+// TITLE belongs to the database container (PATCH /v1/databases/{id}), the
+// SCHEMA belongs to a data source (PATCH /v1/data_sources/{id}). The
+// database endpoint accepts no "properties" key at all — verified against
+// the live API, it returns 200 and silently ignores one, which is how the
+// original shipped broken.
+//
+// Update resolves what the caller's id names before writing and ALWAYS
+// issues at most ONE mutating request:
+//
+//   - title only       → PATCH the surface the id names.
+//   - schema (± title) → resolve the data source, then send both keys in a
+//     single PATCH /v1/data_sources/{id}. That endpoint
+//     accepts "title" alongside "properties", so the
+//     write stays atomic.
+//
+// The one-call rule is deliberate. A first version of this fix sent the
+// title to /databases/{id} and the schema to /data_sources/{id} using the
+// same id. Those namespaces are disjoint, so no id existed for which both
+// calls could succeed — and because the title went first and committed, a
+// failure left a half-applied update whose error never said the rename had
+// already landed.
+//
+// id may be a database id or a data source id; both resolve. A container
+// holding several data sources is ambiguous for a schema write, so Update
+// refuses and names them rather than guessing.
 func (d *DatabaseClient) Update(ctx context.Context, id string, req UpdateDatabaseRequest) (*Database, error) {
 	if err := d.checkAuth(); err != nil {
 		return nil, fmt.Errorf("update database: %w", err)
@@ -372,29 +420,96 @@ func (d *DatabaseClient) Update(ctx context.Context, id string, req UpdateDataba
 	if id == "" {
 		return nil, fmt.Errorf("update database: id is required")
 	}
-
-	body := map[string]interface{}{}
-	if req.Title != "" {
-		body["title"] = titleRichText(req.Title)
-	}
-	if len(req.Properties) > 0 {
-		body["properties"] = req.Properties
-	}
-	if len(body) == 0 {
+	if req.Title == "" && len(req.Properties) == 0 {
 		return nil, fmt.Errorf("update database: no fields to update")
 	}
 
-	httpReq, err := d.c.newRequest(ctx, http.MethodPatch, "/databases/"+id, body)
+	// Title-only: either surface accepts it alone.
+	if len(req.Properties) == 0 {
+		body := map[string]interface{}{"title": titleRichText(req.Title)}
+		db, err := d.patchOnce(ctx, "/databases/"+id, body)
+		if err == nil {
+			return db, nil
+		}
+		if !isQueryFallbackTrigger(err) {
+			return nil, fmt.Errorf("update database: %w", err)
+		}
+		db, dsErr := d.patchOnce(ctx, "/data_sources/"+id, body)
+		if dsErr != nil {
+			return nil, fmt.Errorf("update database: %q is neither a database nor a data source this integration can edit: %w", id, dsErr)
+		}
+		return db, nil
+	}
+
+	// Schema involved: resolve the data source, write everything at once.
+	dsID, err := d.resolveDataSourceID(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := d.c.do(httpReq)
+	body := map[string]interface{}{"properties": req.Properties}
+	if req.Title != "" {
+		body["title"] = titleRichText(req.Title)
+	}
+	db, err := d.patchOnce(ctx, "/data_sources/"+dsID, body)
 	if err != nil {
-		return nil, fmt.Errorf("update database: %w", err)
+		return nil, fmt.Errorf("update data source %q: %w", dsID, err)
+	}
+	return db, nil
+}
+
+// resolveDataSourceID maps a caller-supplied id onto the data source that
+// actually holds a schema.
+//
+// A data source id resolves to itself. A database id resolves through the
+// container's data_sources array — the array Notion documents as the way
+// to discover a data source id, and the one `databases data-sources`
+// prints. A container with more than one data source has no single right
+// answer, so this errors and names them rather than picking one: silently
+// writing a schema to whichever source sorted first is the same class of
+// plausible-but-wrong result as issue #88.
+func (d *DatabaseClient) resolveDataSourceID(ctx context.Context, id string) (string, error) {
+	// Probe /data_sources first — the opposite order to Get, on purpose.
+	// We are looking for a data source, so the common case (the caller
+	// already passed one, as the flag help asks them to) costs one round
+	// trip instead of a guaranteed 404 followed by a second call.
+	if _, _, err := d.getOnceRaw(ctx, "/data_sources/"+id); err == nil {
+		return id, nil
+	}
+	probed, err := d.Get(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("resolve data source for %q: %w", id, err)
+	}
+	switch len(probed.DataSources) {
+	case 1:
+		return probed.DataSources[0].ID, nil
+	case 0:
+		return "", fmt.Errorf("update database: %q reports no data sources, so there is no schema to update", id)
+	default:
+		names := make([]string, 0, len(probed.DataSources))
+		for _, ds := range probed.DataSources {
+			names = append(names, fmt.Sprintf("%s (%s)", ds.ID, ds.Name))
+		}
+		return "", fmt.Errorf("%q holds %d data sources, so which schema to update is ambiguous — re-run with one of these ids: %s",
+			id, len(probed.DataSources), strings.Join(names, ", "))
+	}
+}
+
+// patchOnce issues a single PATCH and decodes the response. Both endpoints
+// return an envelope the Database struct can carry; Object records which
+// one answered ("database" or "data_source") so callers can report the
+// resource honestly rather than assuming.
+func (d *DatabaseClient) patchOnce(ctx context.Context, path string, body map[string]interface{}) (*Database, error) {
+	req, err := d.c.newRequest(ctx, http.MethodPatch, path, body)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := d.c.do(req)
+	if err != nil {
+		return nil, err
 	}
 	var db Database
 	if err := decodeInto(resp, &db); err != nil {
-		return nil, fmt.Errorf("update database: %w", err)
+		return nil, err
 	}
 	return &db, nil
 }
