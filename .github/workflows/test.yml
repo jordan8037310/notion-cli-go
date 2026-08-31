@@ -43,7 +43,27 @@ jobs:
       - name: Coverage summary
         run: go tool cover -func=coverage.out | tail -n 20
 
-      - name: Test-gap gate
+      # Enforce the floor, don't just print it. The Makefile has always had
+      # a COVER_MIN gate and `make ci` runs it, but CI only printed a
+      # summary — so coverage could regress to any level and stay green,
+      # and the gate existed only for whoever remembered to run it locally.
+      # Wiring it now, while the number is healthy, rather than after it is
+      # load-bearing (issue #110).
+      - name: Coverage floor
+        run: |
+          set -euo pipefail
+          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          min=$(sed -n 's/^COVER_MIN[^0-9]*\([0-9][0-9]*\).*/\1/p' Makefile | head -1)
+          echo "total coverage: ${pct}%  (floor: ${min}%)"
+          awk -v p="$pct" -v m="$min" 'BEGIN { exit !(p < m) }' \
+            && { echo "::error::coverage ${pct}% is below the ${min}% floor"; exit 1; } \
+            || true
+
+      # Report-only by design: the gap script lists exported functions with
+      # no matching Test*, which includes deliberate omissions. Strict mode
+      # would fail the build on those, so this stays advisory ON PURPOSE —
+      # noted here so the next reader does not assume it is enforcing.
+      - name: Test-gap report (advisory)
         run: CHECK_TEST_GAPS_STRICT=0 bash scripts/check-test-coverage.sh
 
       - name: Upload coverage artifact
