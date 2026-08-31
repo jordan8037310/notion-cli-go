@@ -31,21 +31,18 @@ func NewBlockClient(c *Client) *BlockClient {
 // for the given page. Preserves the pre-refactor filtering behavior so the
 // legacy top-level GetBlocks continues to match.
 func (b *BlockClient) GetBlocks(ctx context.Context, pageID string) ([]Block, error) {
-	req, err := b.c.newRequest(ctx, http.MethodGet, "/blocks/"+pageID+"/children", nil)
+	// Walk pagination. This read a single page of /blocks/{id}/children
+	// and stopped, while its sibling GetAllBlocks walked the whole list —
+	// so the same 1-based index the CLI shows a user resolved against two
+	// different lists depending on which helper a code path happened to
+	// use, and they disagreed past 100 children. Third instance of "one
+	// path paginates, its sibling does not", after #55 and #57. See #108.
+	all, err := b.GetAllBlocks(ctx, pageID, "")
 	if err != nil {
 		return nil, err
 	}
-	resp, err := b.c.do(req)
-	if err != nil {
-		return nil, err
-	}
-	var blockList BlockList
-	if err := decodeInto(resp, &blockList); err != nil {
-		return nil, err
-	}
-
 	var blocks []Block
-	for _, result := range blockList.Results {
+	for _, result := range all {
 		if result.Object == "block" && result.ToDo != nil && len(result.ToDo.RichText) > 0 {
 			blocks = append(blocks, result)
 		}
@@ -134,22 +131,17 @@ func (b *BlockClient) GetBlockID(ctx context.Context, pageID string, order int) 
 	if order < 1 {
 		return "", fmt.Errorf("order must be greater than 0")
 	}
-	req, err := b.c.newRequest(ctx, http.MethodGet, "/blocks/"+pageID+"/children", nil)
+	// Resolve the index against the FULL child list, not the first page.
+	// See GetBlocks above and issue #108: an index read off `blocks list`
+	// addressed a different block once a page passed 100 children.
+	all, err := b.GetAllBlocks(ctx, pageID, "")
 	if err != nil {
 		return "", err
 	}
-	resp, err := b.c.do(req)
-	if err != nil {
-		return "", err
-	}
-	var blockList BlockList
-	if err := decodeInto(resp, &blockList); err != nil {
-		return "", err
-	}
-	if order > len(blockList.Results) {
+	if order > len(all) {
 		return "", fmt.Errorf("order number exceeds the number of blocks")
 	}
-	return blockList.Results[order-1].ID, nil
+	return all[order-1].ID, nil
 }
 
 // MarkToDoBlockChecked flips the to-do at the given 1-based to-do

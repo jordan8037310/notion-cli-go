@@ -101,7 +101,10 @@ notioncli blocks delete 5
 
 ### Page Commands
 
-- `pages get <id>`: Retrieve a page.
+- `pages get <id>`: Retrieve a page. Warns when a property has hit Notion's
+  25-reference cap and may be truncated.
+- `pages property <page-id> <property-id>`: Read one property in full, past that
+  cap. Property ids come from `pages get <id> --json`.
 - `pages create`: Create a page under a page or database parent.
 - `pages update <id>`: Update a page's title or properties.
 - `pages archive <id>` / `pages unarchive <id>`: Move a page to or from the trash.

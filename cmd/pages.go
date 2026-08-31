@@ -248,6 +248,16 @@ var pagesGetCmd = &cobra.Command{
 			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), page))
 		}
 		printPage(cmd.OutOrStdout(), page)
+		// GET /v1/pages/{id} silently caps page and person references at
+		// 25 per property. Notion gives no flag, so a property sitting
+		// at exactly the cap is *probably* truncated — say so rather
+		// than let the user compute over a partial set (issue #104).
+		if truncated := utils.TruncatedProperties(page.Properties); len(truncated) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"note: %s reached the %d-reference cap and may be truncated; "+
+					"read them in full with `notioncli pages property %s <property-id>`\n",
+				strings.Join(truncated, ", "), utils.MaxPageReferencesInline, args[0])
+		}
 		return nil
 	},
 }
@@ -471,9 +481,48 @@ func printPage(w io.Writer, page *utils.Page) {
 	fmt.Fprintln(w, string(b))
 }
 
+// pagesPropertyCmd reads a single page property in full.
+//
+// GET /v1/pages/{id} caps page and person references at 25 per property and
+// gives no signal when it truncates — so `pages get` on a relation with 40
+// entries reported the first 25 as though they were everything, and any
+// script computing over relations got a wrong answer that looked right.
+// This is the documented escape hatch (issue #104).
+var pagesPropertyCmd = &cobra.Command{
+	Use:   "property <page-id> <property-id>",
+	Short: "Read one page property in full, past the 25-reference cap",
+	Long: `Read a single page property, following pagination.
+
+` + "`pages get`" + ` returns at most 25 page or person references per
+property and does not say when it truncated. Use this to read a large
+relation or people property completely. Property ids come from
+` + "`pages get <id> --json`" + ` (each property carries an "id").`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		pc, err := newPageClient()
+		if err != nil {
+			return jsonErrorOr(cmd, err)
+		}
+		items, err := pc.GetPropertyItem(context.Background(), args[0], args[1])
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("pages property: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), items))
+		}
+		w := cmd.OutOrStdout()
+		for _, it := range items {
+			fmt.Fprintln(w, string(it))
+		}
+		color.Cyan("  %d item(s)", len(items))
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(pagesCmd)
 	pagesCmd.AddCommand(pagesGetCmd)
+	pagesCmd.AddCommand(pagesPropertyCmd)
 	pagesCmd.AddCommand(pagesCreateCmd)
 	pagesCmd.AddCommand(pagesUpdateCmd)
 	pagesCmd.AddCommand(pagesArchiveCmd)
