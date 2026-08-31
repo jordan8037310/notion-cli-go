@@ -1,0 +1,58 @@
+# Live-API integration lane.
+#
+# Deliberately separate from test.yml: the unit lane must stay runnable by
+# anyone on a fork with no secrets, while this one mutates a real Notion
+# workspace and cannot. It is also the only lane that can catch API shape
+# drift — every defect in the 2026-08-29/30 audit passed the unit suite.
+name: Integration
+
+on:
+  # Manual by default. Shape drift is driven by Notion's release calendar,
+  # not by our commits, so a schedule catches more than a per-push run
+  # would — and a per-push run against one shared workspace would collide.
+  workflow_dispatch:
+  schedule:
+    # Mondays 06:00 UTC.
+    - cron: "0 6 * * 1"
+
+concurrency:
+  # The harness is single-tenant against one fixture workspace; concurrent
+  # runs would trip rate limits and interleave scratch objects.
+  group: notion-integration
+  cancel-in-progress: false
+
+jobs:
+  integration:
+    name: Live Notion API
+    runs-on: ubuntu-latest
+    # Fork PRs never see secrets; skip rather than fail confusingly.
+    if: github.repository == 'jordan8037310/notion-cli-go'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache: true
+
+      - name: Integration tests
+        env:
+          NOTION_INTEGRATION_API_KEY: ${{ secrets.NOTION_INTEGRATION_API_KEY }}
+          NOTION_INTEGRATION_FIXTURE_PARENT: ${{ secrets.NOTION_INTEGRATION_FIXTURE_PARENT }}
+        run: |
+          if [ -z "$NOTION_INTEGRATION_API_KEY" ] || [ -z "$NOTION_INTEGRATION_FIXTURE_PARENT" ]; then
+            echo "::warning::Integration secrets not configured; skipping."
+            exit 0
+          fi
+          go test -tags=integration -count=1 -v ./integration/...
+
+      - name: Upload run artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-artefacts
+          path: integration/.testdata/
+          if-no-files-found: ignore
+          retention-days: 14

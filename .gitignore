@@ -32,3 +32,7 @@ coverage.html
 # Claude Code project workspace (session state, worktrees)
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+
+# Integration-run artefacts: per-run CLI output and captured API state.
+# Useful locally for diffing a failure; never committed.
+.testdata/

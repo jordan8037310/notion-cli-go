@@ -58,6 +58,10 @@ cover: ## Generate coverage profile and print per-function coverage
 	echo "Total coverage: $$pct% (gate: $(COVER_MIN)%)"; \
 	awk "BEGIN {exit !($$pct < $(COVER_MIN))}" && { echo "Coverage below gate"; exit 1; } || true
 
+.PHONY: integration-test
+integration-test: ## Run the live-API integration harness (needs NOTION_INTEGRATION_* env)
+	$(GO) test -tags=integration -count=1 -v ./integration/...
+
 .PHONY: cover-html
 cover-html: cover ## Open HTML coverage report
 	$(GO) tool cover -html=$(COVER_FILE) -o $(COVER_HTML)

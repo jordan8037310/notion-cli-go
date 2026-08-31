@@ -177,6 +177,49 @@ go test -race ./...
 
 Coverage sits around 87% with a 70% floor enforced by `make cover`.
 
+### Running integration tests
+
+The unit suite uses `httptest` mocks, which can only prove the serialiser agrees
+with the assumption that produced it. When Notion's `2025-09-03` release moved a
+database's schema onto its data source, the mocks kept asserting the old shape
+and three commands shipped broken — each returning HTTP 200 while silently
+discarding the user's data.
+
+The integration harness exercises the built binary against a real workspace:
+
+```bash
+export NOTION_INTEGRATION_API_KEY=secret_...          # a TEST workspace token
+export NOTION_INTEGRATION_FIXTURE_PARENT=<page-id>    # a page shared with it
+make integration-test
+```
+
+Without both variables every test skips with a message, so `go test -tags=integration ./...`
+is safe to run anywhere. The variables are deliberately *not* `NOTION_API_KEY`, so an
+everyday credential cannot accidentally point a mutating suite at a production workspace.
+
+**Use a dedicated test workspace.** Each run provisions its own scratch page under the
+fixture parent, exercises it, and trashes everything it created.
+
+Every request, every CLI invocation and the final page state land in
+`integration/.testdata/integration/<run-id>/`, so a failure can be diffed after the fact
+rather than only reproduced.
+
+#### What the contracts encode
+
+`integration/contracts_test.go` is a recorded data set, not a set of assumptions — each
+claim was observed against a live workspace rather than read from documentation, which
+matters because Notion's create-database reference page still carries pre-upgrade prose
+that contradicts its own schema.
+
+Half the file is **anti-contracts**: behaviour that is wrong but silent, where Notion
+answers `200` and ignores the obsolete key. Those cannot be discovered by a mock, and
+every one of them shipped as a green test.
+
+**To move to a new API version:** bump `APIVersion` in `integration/harness.go` and run
+the suite. Each failure names the endpoint whose shape moved and prints the body actually
+received, so a version bump produces a list of things to fix instead of a production
+incident.
+
 ## License
 
 This project is licensed under the Apache License 2.0. See the LICENSE file for details.
