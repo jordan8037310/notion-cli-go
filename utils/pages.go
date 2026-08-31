@@ -266,11 +266,35 @@ func (p *PageClient) Create(ctx context.Context, req CreatePageRequest) (*Page, 
 		// We always probe on database parents — even without --title,
 		// 2026-03-11 may need the discriminator swap for the request
 		// to land. Cost is one extra GET per database-parented create.
-		if probed, err := NewDatabaseClient(p.c).Get(ctx, req.Parent.DatabaseID); err == nil && probed != nil {
+		dc := NewDatabaseClient(p.c)
+		if probed, err := dc.Get(ctx, req.Parent.DatabaseID); err == nil && probed != nil {
 			if probed.Object == "data_source" {
 				parent = PageParent{DataSourceID: req.Parent.DatabaseID}
 			}
-			if k := findSchemaTitlePropertyKey(probed.Properties); k != "" {
+			schema := probed.Properties
+
+			// Since 2025-09-03 a database is a CONTAINER and its response
+			// carries no `properties` at all — confirmed live, the only
+			// top-level keys are cover/created_time/data_sources/…/title/url.
+			// So on a real database parent this probe read an empty schema,
+			// found no title-typed property, and fell back to the literal
+			// key "title": the #60 fix for renamed title columns has been
+			// silently dead ever since. Its tests passed because their mocks
+			// still returned a pre-upgrade object with properties inline.
+			//
+			// Follow the container's data_sources array to the resource that
+			// actually holds the schema. Only when there is exactly one — a
+			// multi-source database gives no basis for picking, and guessing
+			// would write the title to the wrong column. See issue #105.
+			if len(schema) == 0 && len(probed.DataSources) == 1 {
+				// Go straight to /data_sources/{id}: Get would probe
+				// /databases/{id} first and eat a guaranteed 404, since a
+				// data source id never resolves there.
+				if ds, _, dsErr := dc.getOnceRaw(ctx, "/data_sources/"+probed.DataSources[0].ID); dsErr == nil && ds != nil {
+					schema = ds.Properties
+				}
+			}
+			if k := findSchemaTitlePropertyKey(schema); k != "" {
 				titleKey = k
 			}
 		}
@@ -583,19 +607,49 @@ func (p *PageClient) Duplicate(ctx context.Context, srcID, parentID string) (*Pa
 	if len(children) == 0 {
 		return newPage, nil
 	}
-	body := map[string]interface{}{"children": children}
-	req, err := p.c.newRequest(ctx, http.MethodPatch, "/blocks/"+newPage.ID+"/children", body)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := p.c.do(req)
-	if err != nil {
-		return nil, fmt.Errorf("duplicate page: append children: %w", err)
-	}
-	if err := expectStatus(resp, http.StatusOK); err != nil {
-		return nil, fmt.Errorf("duplicate page: append children: %w", err)
+	// Append in batches. PATCH /v1/blocks/{id}/children documents
+	// children with maxItems: 100, and this used to send the whole list in
+	// one request. Past 100 top-level blocks the append failed AFTER the
+	// destination page had been created, leaving the user an empty orphan
+	// page — and another one on every retry. Confirmed live: a 101-item
+	// append is rejected. See issue #97.
+	for start := 0; start < len(children); start += maxBlockChildrenPerRequest {
+		end := start + maxBlockChildrenPerRequest
+		if end > len(children) {
+			end = len(children)
+		}
+		body := map[string]interface{}{"children": children[start:end]}
+		req, err := p.c.newRequest(ctx, http.MethodPatch, "/blocks/"+newPage.ID+"/children", body)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := p.c.do(req)
+		if err != nil {
+			return nil, duplicatePartialErr(newPage.ID, start, len(children), err)
+		}
+		if err := expectStatus(resp, http.StatusOK); err != nil {
+			return nil, duplicatePartialErr(newPage.ID, start, len(children), err)
+		}
 	}
 	return newPage, nil
+}
+
+// maxBlockChildrenPerRequest is Notion's documented cap on the children
+// array of PATCH /v1/blocks/{id}/children.
+const maxBlockChildrenPerRequest = 100
+
+// duplicatePartialErr reports an append failure without hiding what was
+// already written. Chunking cannot make the operation atomic — Notion has
+// no transaction across appends — so when a later batch fails the
+// destination page exists and holds the earlier ones. Saying so is the
+// difference between a user cleaning up one known page and discovering a
+// pile of half-copies later.
+func duplicatePartialErr(pageID string, written, total int, err error) error {
+	if written == 0 {
+		return fmt.Errorf("duplicate page: append children: %w (destination page %s was created but is empty; delete it before retrying)", err, pageID)
+	}
+	return fmt.Errorf("duplicate page: append children failed after %d of %d blocks: %w (destination page %s is PARTIALLY populated; delete it before retrying)",
+		written, total, err, pageID)
 }
 
 // extractTitle returns the plain-text title of a page when it can be
