@@ -477,7 +477,7 @@ func (d *DatabaseClient) resolveDataSourceID(ctx context.Context, id string) (st
 	}
 	probed, err := d.Get(ctx, id)
 	if err != nil {
-		return "", fmt.Errorf("update database: resolve %q: %w", id, err)
+		return "", fmt.Errorf("resolve data source for %q: %w", id, err)
 	}
 	switch len(probed.DataSources) {
 	case 1:
@@ -489,7 +489,7 @@ func (d *DatabaseClient) resolveDataSourceID(ctx context.Context, id string) (st
 		for _, ds := range probed.DataSources {
 			names = append(names, fmt.Sprintf("%s (%s)", ds.ID, ds.Name))
 		}
-		return "", fmt.Errorf("update database: %q holds %d data sources, so which schema to update is ambiguous — re-run with one of these ids: %s",
+		return "", fmt.Errorf("%q holds %d data sources, so which schema to update is ambiguous — re-run with one of these ids: %s",
 			id, len(probed.DataSources), strings.Join(names, ", "))
 	}
 }
