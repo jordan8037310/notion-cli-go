@@ -12,7 +12,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	neturl "net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 )
@@ -271,3 +273,104 @@ func createFilePart(mw *multipart.Writer, filename, contentType string) (io.Writ
 
 // quoteEscaper mirrors mime/multipart's own escaping for header values.
 var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
+
+// FileRefFromBlock extracts the downloadable URL and a suggested filename
+// from a media-bearing block (image / file / video / pdf / audio).
+//
+// A Notion file object has three variants and the URL lives in a different
+// place in each:
+//
+//   - "file"        Notion-hosted, a PRESIGNED S3 URL that expires
+//   - "external"    a plain third-party URL
+//   - "file_upload" a reference only — no URL at all
+//
+// The file_upload case is why `files download <file-upload-id>` cannot be
+// built as issue #42 proposed: GET /v1/file_uploads/{id} returns metadata
+// (filename, content_type, status, size) and NO url, verified live. Once a
+// file upload is attached to a block, Notion re-serves it as the "file"
+// variant, and that is where a download can actually start.
+func FileRefFromBlock(b Block) (url, filename string, ok bool) {
+	var m *MediaBlock
+	switch b.Type {
+	case "image":
+		m = b.Image
+	case "file":
+		m = b.File
+	case "video":
+		m = b.Video
+	default:
+		return "", "", false
+	}
+	if m == nil {
+		return "", "", false
+	}
+	switch m.Type {
+	case "file":
+		if m.File != nil && m.File.URL != "" {
+			return m.File.URL, filenameFromURL(m.File.URL), true
+		}
+	case "external":
+		if m.External != nil && m.External.URL != "" {
+			return m.External.URL, filenameFromURL(m.External.URL), true
+		}
+	}
+	return "", "", false
+}
+
+// filenameFromURL derives a save name from a URL path, dropping the query
+// string — a presigned S3 URL carries a long signature that must not end up
+// in the filename.
+func filenameFromURL(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return "download"
+	}
+	name := pathpkg.Base(u.Path)
+	if name == "" || name == "." || name == "/" {
+		return "download"
+	}
+	if decoded, err := neturl.PathUnescape(name); err == nil {
+		name = decoded
+	}
+	return name
+}
+
+// DownloadURL streams the content at url into w.
+//
+// It deliberately does NOT send the Notion Authorization header. Notion
+// serves hosted files from presigned S3 URLs where the signature IS the
+// credential; attaching a bearer token is at best useless and at worst
+// rejected. External URLs are third-party and must not receive it either.
+//
+// The body is streamed rather than buffered, so a large attachment does not
+// have to fit in memory.
+func (f *FileClient) DownloadURL(ctx context.Context, url string, w io.Writer) (int64, error) {
+	if url == "" {
+		return 0, fmt.Errorf("download: url is required")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("download: %w", err)
+	}
+	resp, err := f.c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("download: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		// A presigned URL that has expired answers 403 with an XML body,
+		// which is unhelpful on its own — name the likely cause.
+		hint := ""
+		if resp.StatusCode == http.StatusForbidden {
+			hint = " (Notion's file URLs are presigned and expire; re-read the block to get a fresh one)"
+		}
+		return 0, fmt.Errorf("download: unexpected status %d%s: %s", resp.StatusCode, hint, strings.TrimSpace(string(body)))
+	}
+	n, err := io.Copy(w, resp.Body)
+	if err != nil {
+		return n, fmt.Errorf("download: %w", err)
+	}
+	return n, nil
+}

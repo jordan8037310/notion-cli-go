@@ -436,3 +436,77 @@ func TestFiles_AddResolvesPageBeforeUploading(t *testing.T) {
 		t.Errorf("uploaded %d file(s) despite having no target page; want 0", uploads)
 	}
 }
+
+// TestBlocksDownload_WritesTheFile covers the cmd path end to end against
+// the mock: resolve the block by index, follow its URL, write to disk.
+func TestBlocksDownload_WritesTheFile(t *testing.T) {
+	srv := withCmdEnv(t)
+	const payload = "block-attachment-bytes"
+
+	orig := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/blocks/filePage/children":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","has_more":false,"results":[
+				{"object":"block","id":"b1","type":"paragraph","paragraph":{"rich_text":[]}},
+				{"object":"block","id":"b2","type":"file","file":{"type":"file",
+				 "file":{"url":"` + srv.URL + `/dl/report.txt"}}}
+			]}`))
+		case r.URL.Path == "/dl/report.txt":
+			_, _ = w.Write([]byte(payload))
+		default:
+			orig.ServeHTTP(w, r)
+		}
+	})
+	t.Setenv("NOTION_PAGE_ID", "filePage")
+
+	dir := t.TempDir()
+	out := filepath.Join(dir, "saved.txt")
+
+	blocksDownloadOut = out
+	t.Cleanup(func() { blocksDownloadOut = "" })
+	if o, err := runFilesCmd(t, []string{"blocks", "download", "2", "-o", out}); err != nil {
+		t.Fatalf("blocks download: %v (%s)", err, o)
+	}
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read downloaded file: %v", err)
+	}
+	if string(got) != payload {
+		t.Errorf("downloaded %q, want %q", got, payload)
+	}
+}
+
+// TestBlocksDownload_RejectsNonMediaBlocks. Asking for a paragraph should
+// say why rather than write an empty file.
+func TestBlocksDownload_RejectsNonMediaBlocks(t *testing.T) {
+	withCmdEnv(t)
+	t.Setenv("NOTION_PAGE_ID", "pageID") // default fixture: one to_do block
+
+	blocksDownloadOut = ""
+	out, err := runFilesCmd(t, []string{"blocks", "download", "1"})
+	if err == nil {
+		t.Fatalf("downloading a to_do should fail, got: %s", out)
+	}
+	if !strings.Contains(err.Error(), "carries no downloadable file") {
+		t.Errorf("error should explain why, got: %v", err)
+	}
+}
+
+// TestBlocksDownload_OutOfRangeNamesTheCount so the user can see how far
+// the index was off.
+func TestBlocksDownload_OutOfRangeNamesTheCount(t *testing.T) {
+	withCmdEnv(t)
+	t.Setenv("NOTION_PAGE_ID", "pageID")
+
+	blocksDownloadOut = ""
+	_, err := runFilesCmd(t, []string{"blocks", "download", "99"})
+	if err == nil {
+		t.Fatal("out-of-range index: want an error")
+	}
+	if !strings.Contains(err.Error(), "out of range") || !strings.Contains(err.Error(), "1 blocks") {
+		t.Errorf("error should name the range, got: %v", err)
+	}
+}

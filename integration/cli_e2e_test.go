@@ -9,10 +9,12 @@ package integration
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 )
@@ -260,6 +262,51 @@ func TestE2E_FileUploadRoundTrip(t *testing.T) {
 	}
 	if out, code := h.CLI("pages", "set-icon", h.PageID, "icon.png", "--json"); code != 0 {
 		t.Fatalf("pages set-icon exited %d: %s", code, out)
+	}
+}
+
+// TestE2E_FileDownloadRoundTrip proves upload → attach → download returns
+// the same bytes. Only a live run can: the download follows a PRESIGNED
+// URL that Notion mints per read, and a mock cannot represent that at all.
+func TestE2E_FileDownloadRoundTrip(t *testing.T) {
+	h := New(t)
+	const payload = "round-trip payload for issue 42\n"
+	h.writeFile(t, "roundtrip.txt", payload)
+
+	if out, code := h.CLI("blocks", "add-file", "roundtrip.txt", "--page", h.PageID); code != 0 {
+		t.Fatalf("blocks add-file exited %d: %s", code, out)
+	}
+
+	// Find the file block's 1-based index the way a user would.
+	out, code := h.CLI("blocks", "list", "--page", h.PageID, "--json")
+	if code != 0 {
+		t.Fatalf("blocks list exited %d: %s", code, out)
+	}
+	index := 0
+	for i, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		var b struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal([]byte(line), &b) == nil && b.Type == "file" {
+			index = i + 1
+			break
+		}
+	}
+	if index == 0 {
+		t.Fatalf("no file block on the page after add-file:\n%s", out)
+	}
+
+	if out, code := h.CLI("blocks", "download", fmt.Sprint(index),
+		"--page", h.PageID, "-o", "downloaded.txt"); code != 0 {
+		t.Fatalf("blocks download exited %d: %s", code, out)
+	}
+
+	got, err := os.ReadFile(h.ArtifactD + "/downloaded.txt")
+	if err != nil {
+		t.Fatalf("read downloaded file: %v", err)
+	}
+	if string(got) != payload {
+		t.Errorf("round trip changed the bytes:\n got %q\nwant %q", got, payload)
 	}
 }
 

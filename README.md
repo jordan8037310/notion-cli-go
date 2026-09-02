@@ -99,6 +99,19 @@ notioncli blocks delete 5
 - `divider` - Horizontal dividers
 - `code` - Code blocks
 
+### Attachments
+
+```bash
+notioncli blocks add-file report.pdf --page <id>   # upload + append a file block
+notioncli blocks download 3 --page <id> -o out.pdf # save the file behind block 3
+notioncli blocks download 3 --page <id> -o -       # stream it to stdout
+```
+
+Downloads start from a **block**, not a file id: Notion's
+`GET /v1/file_uploads/{id}` returns metadata with no URL, so an upload
+reference is not fetchable. Once attached, the file is re-served on the block
+with a presigned URL — which expires, so the block is re-read on every run.
+
 ### Page Commands
 
 - `pages get <id>`: Retrieve a page. Warns when a property has hit Notion's
