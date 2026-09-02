@@ -119,8 +119,8 @@ func TestFiles_Cmd_DispatchHappyPath(t *testing.T) {
 		args     []string
 		wantFrag string
 	}{
-		{"blocks add-image", []string{"blocks", "add-image", filePath}, "Uploaded image"},
-		{"blocks add-file", []string{"blocks", "add-file", filePath}, "Uploaded file"},
+		{"blocks add-image", []string{"blocks", "add-image", filePath}, "Added image block"},
+		{"blocks add-file", []string{"blocks", "add-file", filePath}, "Added file block"},
 		{"blocks add-file with --name", []string{"blocks", "add-file", filePath, "--name", "nice-name.txt"}, "nice-name.txt"},
 		{"pages set-icon", []string{"pages", "set-icon", "page-abc", filePath}, "Set icon on page"},
 		{"pages set-cover", []string{"pages", "set-cover", "page-abc", filePath}, "Set cover on page"},
@@ -332,5 +332,107 @@ func TestFiles_SetIcon_BadPageIDFails(t *testing.T) {
 	defer mu.Unlock()
 	if uploads != 0 {
 		t.Errorf("uploaded %d file(s) despite the page id not resolving; want 0", uploads)
+	}
+}
+
+// TestFiles_AddImageAndFileAppendTheBlock guards issue #124. Both commands
+// uploaded the file, reported success — add-file's JSON envelope even said
+// "ok":true — and never created a block, so the page listed nothing
+// afterwards. Same shape as #82, which fixed pages set-icon and left these
+// two behind.
+func TestFiles_AddImageAndFileAppendTheBlock(t *testing.T) {
+	for _, tt := range []struct{ cmdName, blockType string }{
+		{"add-image", "image"},
+		{"add-file", "file"},
+	} {
+		t.Run(tt.cmdName, func(t *testing.T) {
+			srv := withCmdEnv(t)
+
+			tmp := t.TempDir()
+			filePath := filepath.Join(tmp, "hello.png")
+			if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+				t.Fatalf("write tmp file: %v", err)
+			}
+
+			var mu sync.Mutex
+			var appendBody []byte
+			orig := srv.Config.Handler
+			srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/blocks/pageID/children") {
+					mu.Lock()
+					appendBody, _ = io.ReadAll(r.Body)
+					mu.Unlock()
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("{}"))
+					return
+				}
+				orig.ServeHTTP(w, r)
+			})
+
+			blocksAddFileName = ""
+			out, err := runFilesCmd(t, []string{"blocks", tt.cmdName, filePath})
+			if err != nil {
+				t.Fatalf("%s: %v (output=%s)", tt.cmdName, err, out)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(appendBody) == 0 {
+				t.Fatalf("%s uploaded but never appended a block — the page stays empty", tt.cmdName)
+			}
+			var sent struct {
+				Children []map[string]interface{} `json:"children"`
+			}
+			if err := json.Unmarshal(appendBody, &sent); err != nil {
+				t.Fatalf("append body is not JSON: %v (%s)", err, appendBody)
+			}
+			if len(sent.Children) != 1 || sent.Children[0]["type"] != tt.blockType {
+				t.Fatalf("appended %+v, want one %s block", sent.Children, tt.blockType)
+			}
+			inner, _ := sent.Children[0][tt.blockType].(map[string]interface{})
+			if inner["type"] != "file_upload" {
+				t.Errorf("block does not reference the upload: %v", inner)
+			}
+			fu, _ := inner["file_upload"].(map[string]interface{})
+			if fu["id"] != "cmd-file-id" {
+				t.Errorf("block references %v, want the uploaded file id", inner["file_upload"])
+			}
+		})
+	}
+}
+
+// TestFiles_AddResolvesPageBeforeUploading confirms a bad target fails
+// without stranding an orphaned upload — the same ordering rule set-icon
+// adopted in #82.
+func TestFiles_AddResolvesPageBeforeUploading(t *testing.T) {
+	srv := withCmdEnv(t)
+	t.Setenv("NOTION_PAGE_ID", "")
+
+	var mu sync.Mutex
+	uploads := 0
+	orig := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/file_uploads" {
+			mu.Lock()
+			uploads++
+			mu.Unlock()
+		}
+		orig.ServeHTTP(w, r)
+	})
+
+	tmp := t.TempDir()
+	filePath := filepath.Join(tmp, "hello.png")
+	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write tmp file: %v", err)
+	}
+
+	blocksAddFileName = ""
+	if _, err := runFilesCmd(t, []string{"blocks", "add-file", filePath}); err == nil {
+		t.Fatal("no target page: want an error")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if uploads != 0 {
+		t.Errorf("uploaded %d file(s) despite having no target page; want 0", uploads)
 	}
 }
