@@ -548,3 +548,121 @@ func TestCreateFilePart_EscapesQuotesInFilenames(t *testing.T) {
 		t.Errorf("quote was not escaped in Content-Disposition:\n%s", buf.String())
 	}
 }
+
+// TestFileRefFromBlock covers the three file-object variants, and why the
+// third makes issue #42's proposed `files download <file-upload-id>`
+// impossible: a file_upload reference carries no URL, and
+// GET /v1/file_uploads/{id} returns metadata only — verified live.
+func TestFileRefFromBlock(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		block    Block
+		wantURL  string
+		wantName string
+		wantOK   bool
+	}{
+		{
+			name: "notion-hosted file block",
+			block: Block{Type: "file", File: &MediaBlock{Type: "file",
+				File: &HostedFile{URL: "https://prod-files.notion-static.com/abc/notes.txt?X-Amz-Signature=deadbeef"}}},
+			wantURL:  "https://prod-files.notion-static.com/abc/notes.txt?X-Amz-Signature=deadbeef",
+			wantName: "notes.txt", // query string must not leak into the filename
+			wantOK:   true,
+		},
+		{
+			name: "external image block",
+			block: Block{Type: "image", Image: &MediaBlock{Type: "external",
+				External: &ExternalFile{URL: "https://example.com/pics/cat.png"}}},
+			wantURL: "https://example.com/pics/cat.png", wantName: "cat.png", wantOK: true,
+		},
+		{
+			name: "video block",
+			block: Block{Type: "video", Video: &MediaBlock{Type: "file",
+				File: &HostedFile{URL: "https://x/clip.mp4"}}},
+			wantURL: "https://x/clip.mp4", wantName: "clip.mp4", wantOK: true,
+		},
+		{
+			// A file_upload reference has no URL — nothing to download from.
+			name: "file_upload reference is not downloadable",
+			block: Block{Type: "file", File: &MediaBlock{Type: "file_upload",
+				FileUpload: &FileUploadRef{ID: "fu1"}}},
+			wantOK: false,
+		},
+		{name: "paragraph carries no file", block: Block{Type: "paragraph"}, wantOK: false},
+		{name: "nil media", block: Block{Type: "image"}, wantOK: false},
+		{
+			name: "percent-encoded name is decoded",
+			block: Block{Type: "file", File: &MediaBlock{Type: "file",
+				File: &HostedFile{URL: "https://x/my%20report.pdf"}}},
+			wantURL: "https://x/my%20report.pdf", wantName: "my report.pdf", wantOK: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			url, name, ok := FileRefFromBlock(tt.block)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if url != tt.wantURL {
+				t.Errorf("url = %q, want %q", url, tt.wantURL)
+			}
+			if name != tt.wantName {
+				t.Errorf("filename = %q, want %q", name, tt.wantName)
+			}
+		})
+	}
+}
+
+// TestDownloadURL_StreamsAndOmitsTheNotionToken. Notion serves hosted files
+// from presigned S3 URLs where the signature IS the credential; attaching a
+// bearer token is useless at best and rejected at worst. External URLs are
+// third-party and must not receive it either.
+func TestDownloadURL_StreamsAndOmitsTheNotionToken(t *testing.T) {
+	payload := strings.Repeat("notion-file-bytes ", 5000) // ~90KB, well past one buffer
+	var sawAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAuth = r.Header.Get("Authorization")
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	n, err := NewFileClient(NewClient("secret_token", WithBaseURL(srv.URL))).
+		DownloadURL(context.Background(), srv.URL+"/f.txt", &buf)
+	if err != nil {
+		t.Fatalf("DownloadURL: %v", err)
+	}
+	if n != int64(len(payload)) || buf.String() != payload {
+		t.Errorf("streamed %d bytes, want %d (content match: %v)", n, len(payload), buf.String() == payload)
+	}
+	if sawAuth != "" {
+		t.Errorf("sent Authorization %q to a presigned/external URL; the signature is the credential", sawAuth)
+	}
+}
+
+// TestDownloadURL_ExpiredURLExplainsItself. An expired presigned URL answers
+// 403 with an opaque XML body, so the error names the actual cause.
+func TestDownloadURL_ExpiredURLExplainsItself(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `<Error><Code>AccessDenied</Code></Error>`)
+	}))
+	defer srv.Close()
+
+	_, err := NewFileClient(NewClient("k", WithBaseURL(srv.URL))).
+		DownloadURL(context.Background(), srv.URL+"/f", io.Discard)
+	if err == nil {
+		t.Fatal("expected an error on 403")
+	}
+	if !strings.Contains(err.Error(), "expire") {
+		t.Errorf("403 should name the expiry cause, got: %v", err)
+	}
+}
+
+func TestDownloadURL_RequiresURL(t *testing.T) {
+	if _, err := NewFileClient(NewClient("k")).DownloadURL(context.Background(), "", io.Discard); err == nil {
+		t.Error("empty url: want error")
+	}
+}

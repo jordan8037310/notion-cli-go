@@ -7,6 +7,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 
 	"notioncli/utils"
 
@@ -196,8 +198,107 @@ fails with the API's own error instead of silently succeeding.`,
 func init() {
 	blocksCmd.AddCommand(blocksAddImageCmd)
 	blocksCmd.AddCommand(blocksAddFileCmd)
+	blocksCmd.AddCommand(blocksDownloadCmd)
 	pagesCmd.AddCommand(pagesSetIconCmd)
 	pagesCmd.AddCommand(pagesSetCoverCmd)
 
+	blocksDownloadCmd.Flags().StringVarP(&blocksDownloadOut, "out", "o", "", `Write to this path ("-" for stdout); defaults to the file's own name`)
 	blocksAddFileCmd.Flags().StringVar(&blocksAddFileName, "name", "", "Override the filename displayed in Notion")
+}
+
+// blocksDownloadFlags back `blocks download`.
+var blocksDownloadOut string
+
+// blocksDownloadCmd saves the file behind a media block to disk.
+//
+// Downloads start from a BLOCK, not from a file id. Notion's
+// GET /v1/file_uploads/{id} returns metadata and no url — verified live —
+// so there is nothing to fetch from an upload reference. Once attached, the
+// file is re-served as the "file" variant on the block with a presigned
+// URL, and that is where a download can begin (issue #42).
+var blocksDownloadCmd = &cobra.Command{
+	Use:   "download <number> [-o PATH]",
+	Short: "Download the file behind an image/file/video block",
+	Long: `Download the file attached to a media block.
+
+<number> is the 1-based index shown by ` + "`blocks list`" + `.
+
+Writes to PATH when given, to the file's own name in the working directory
+otherwise, and to stdout when PATH is "-". Notion's hosted URLs are
+presigned and expire, so the block is re-read on every run.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		index, err := strconv.Atoi(args[0])
+		if err != nil || index < 1 {
+			return jsonErrorOr(cmd, fmt.Errorf("blocks download: %q is not a valid 1-based block number", args[0]))
+		}
+		apiKey, _ := utils.SetAPIConfig()
+		if apiKey == "" {
+			return jsonErrorOr(cmd, fmt.Errorf("blocks download: %w", utils.ErrMissingAPIKey))
+		}
+		pageID, err := resolvePageID()
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("blocks download: %w", err))
+		}
+
+		blocks, err := utils.GetAllBlocks(apiKey, pageID, "")
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("blocks download: %w", err))
+		}
+		if index > len(blocks) {
+			return jsonErrorOr(cmd, fmt.Errorf(
+				"blocks download: block %d is out of range (the page has %d blocks)", index, len(blocks)))
+		}
+		block := blocks[index-1]
+
+		url, name, ok := utils.FileRefFromBlock(block)
+		if !ok {
+			return jsonErrorOr(cmd, fmt.Errorf(
+				"blocks download: block %d is a %s and carries no downloadable file "+
+					"(only image, file and video blocks do)", index, block.Type))
+		}
+
+		out := blocksDownloadOut
+		if out == "" {
+			out = name
+		}
+
+		client := utils.NewClient(apiKey, utils.WithBaseURL(utils.GetBaseURL()))
+		fc := utils.NewFileClient(client)
+
+		// "-" streams to stdout so the command composes with a pipe.
+		if out == "-" {
+			n, err := fc.DownloadURL(context.Background(), url, cmd.OutOrStdout())
+			if err != nil {
+				return jsonErrorOr(cmd, err)
+			}
+			_ = n
+			return nil
+		}
+
+		f, err := os.Create(out)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("blocks download: create %q: %w", out, err))
+		}
+		n, err := fc.DownloadURL(context.Background(), url, f)
+		if cerr := f.Close(); err == nil && cerr != nil {
+			err = cerr
+		}
+		if err != nil {
+			// Do not leave a truncated file behind pretending to be the
+			// attachment.
+			_ = os.Remove(out)
+			return jsonErrorOr(cmd, err)
+		}
+
+		if globalJSON {
+			return jsonErrorOr(cmd, emitOK(cmd.OutOrStdout(), map[string]interface{}{
+				"action": "download",
+				"path":   out,
+				"bytes":  n,
+			}))
+		}
+		color.Green("Downloaded %s (%d bytes)", out, n)
+		return nil
+	},
 }
