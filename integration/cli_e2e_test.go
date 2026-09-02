@@ -7,7 +7,11 @@
 package integration
 
 import (
+	"bytes"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"strings"
 	"testing"
@@ -215,4 +219,56 @@ func assertColumns(t *testing.T, schema map[string]interface{}, stage string, wa
 				stage, w, keysOf(schema))
 		}
 	}
+}
+
+// TestE2E_FileUploadRoundTrip guards the defect that motivated adding this
+// case: Notion derives a content type from the filename at create time and
+// rejects a send whose multipart part disagrees. multipart.CreateFormFile
+// hardcodes application/octet-stream, so EVERY upload of a recognisably
+// typed file failed in production — while the unit suite passed, because a
+// mock has no opinion about part headers.
+//
+// This is the shape of bug the whole package exists for, so it is covered
+// against the real API rather than only against a fixture.
+func TestE2E_FileUploadRoundTrip(t *testing.T) {
+	h := New(t)
+
+	for _, tt := range []struct{ name, body string }{
+		{"notes.txt", "hello from the integration harness\n"},
+		{"data.json", `{"ok":true}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			h.writeFile(t, tt.name, tt.body)
+
+			out, code := h.CLI("blocks", "add-file", tt.name, "--page", h.PageID, "--json")
+			if code != 0 {
+				t.Fatalf("blocks add-file %s exited %d — a typed file was rejected: %s", tt.name, code, out)
+			}
+			if !strings.Contains(out, `"ok":true`) && !strings.Contains(out, `"id"`) {
+				t.Errorf("upload of %s produced no file reference: %s", tt.name, out)
+			}
+		})
+	}
+
+	// The same multipart path backs page icons, so a regression there
+	// would otherwise only surface for a user setting one. Notion requires
+	// an actual image here — a .txt is rejected with "has a type of
+	// productivity, but only image files are expected" — so this writes a
+	// real 1x1 PNG rather than a placeholder.
+	if err := writeFileHelperBytes(h.ArtifactD+"/icon.png", onePixelPNG()); err != nil {
+		t.Fatalf("write icon: %v", err)
+	}
+	if out, code := h.CLI("pages", "set-icon", h.PageID, "icon.png", "--json"); code != 0 {
+		t.Fatalf("pages set-icon exited %d: %s", code, out)
+	}
+}
+
+// onePixelPNG returns the smallest valid PNG, so the icon path can be
+// exercised without committing a binary fixture.
+func onePixelPNG() []byte {
+	var buf bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 0x0F, G: 0x6E, B: 0x68, A: 0xFF})
+	_ = png.Encode(&buf, img)
+	return buf.Bytes()
 }

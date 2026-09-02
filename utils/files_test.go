@@ -1,10 +1,13 @@
 package utils
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -435,7 +438,7 @@ func TestFiles_PutMultipart_Headers(t *testing.T) {
 
 	client := NewFileClient(NewClient("k", WithBaseURL(srv.URL)))
 	path := writeTempFile(t, 4)
-	if err := client.putMultipart(context.Background(), srv.URL+"/send", path, "upload.bin"); err != nil {
+	if err := client.putMultipart(context.Background(), srv.URL+"/send", path, "upload.bin", "application/octet-stream"); err != nil {
 		t.Fatalf("putMultipart: %v", err)
 	}
 	if !strings.HasPrefix(gotType, "multipart/form-data; boundary=") {
@@ -446,5 +449,102 @@ func TestFiles_PutMultipart_Headers(t *testing.T) {
 	}
 	if gotVersion != NotionAPIVersion {
 		t.Errorf("Notion-Version = %q; want %q", gotVersion, NotionAPIVersion)
+	}
+}
+
+// TestUpload_EchoesNotionsContentType guards a defect that every unit test
+// missed because the mock accepted any part header.
+//
+// Notion derives a content type from the filename at CREATE time and
+// returns it. The SEND step must echo it back exactly; a mismatch is
+// rejected:
+//
+//	400 validation_error: Current file content type of
+//	`application/octet-stream` does not match the original content type
+//	of `text/plain; charset=utf-8`.
+//
+// multipart.CreateFormFile hardcodes application/octet-stream, so EVERY
+// upload of a file with a recognisable type failed in production —
+// blocks add-image, blocks add-file, pages set-icon, pages set-cover. Only
+// a real request could see it.
+func TestUpload_EchoesNotionsContentType(t *testing.T) {
+	var partContentType string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/file_uploads" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"file_upload","id":"fu1","status":"pending",
+				"filename":"notes.txt","content_type":"text/plain; charset=utf-8",
+				"upload_url":"` + "http://" + r.Host + `/file_uploads/fu1/send"}`))
+			return
+		}
+		// Inspect the multipart part's own Content-Type, which is what
+		// Notion compares against — not the request's.
+		_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil {
+			t.Errorf("send request is not multipart: %v", err)
+			return
+		}
+		mr := multipart.NewReader(r.Body, params["boundary"])
+		part, err := mr.NextPart()
+		if err != nil {
+			t.Errorf("read part: %v", err)
+			return
+		}
+		partContentType = part.Header.Get("Content-Type")
+
+		// Reject a mismatch exactly as the live API does, so this mock
+		// cannot be more permissive than production.
+		if partContentType != "text/plain; charset=utf-8" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"object":"error","status":400,"code":"validation_error",
+				"message":"Current file content type does not match the original content type."}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"object":"file_upload","id":"fu1","status":"uploaded"}`))
+	}))
+	defer srv.Close()
+
+	path := writeTempFile(t, 16)
+	ref, err := NewFileClient(NewClient("k", WithBaseURL(srv.URL))).
+		UploadAs(context.Background(), path, "notes.txt")
+	if err != nil {
+		t.Fatalf("UploadAs: %v", err)
+	}
+	if ref.ID != "fu1" {
+		t.Errorf("ref.ID = %q", ref.ID)
+	}
+	if partContentType != "text/plain; charset=utf-8" {
+		t.Errorf("multipart part Content-Type = %q, want Notion's own %q",
+			partContentType, "text/plain; charset=utf-8")
+	}
+}
+
+// TestCreateFilePart_FallsBackWhenNotionSaysNothing keeps a hand-built
+// response (or an older API) from producing a part with no type at all.
+func TestCreateFilePart_FallsBackWhenNotionSaysNothing(t *testing.T) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if _, err := createFilePart(mw, "x.bin", ""); err != nil {
+		t.Fatalf("createFilePart: %v", err)
+	}
+	_ = mw.Close()
+	if !strings.Contains(buf.String(), "application/octet-stream") {
+		t.Errorf("empty content type should fall back to octet-stream:\n%s", buf.String())
+	}
+}
+
+// TestCreateFilePart_EscapesQuotesInFilenames stops a crafted name from
+// breaking out of the Content-Disposition header.
+func TestCreateFilePart_EscapesQuotesInFilenames(t *testing.T) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if _, err := createFilePart(mw, `we"ird.txt`, "text/plain"); err != nil {
+		t.Fatalf("createFilePart: %v", err)
+	}
+	_ = mw.Close()
+	if !strings.Contains(buf.String(), `filename="we\"ird.txt"`) {
+		t.Errorf("quote was not escaped in Content-Disposition:\n%s", buf.String())
 	}
 }

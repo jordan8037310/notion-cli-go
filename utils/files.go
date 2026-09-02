@@ -11,8 +11,10 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // MaxFileUploadBytes is the client-side cap applied before we contact
@@ -62,6 +64,11 @@ type FileUploadResponse struct {
 	Status     string `json:"status"`
 	ExpiryTime string `json:"expiry_time,omitempty"`
 	Filename   string `json:"filename,omitempty"`
+	// ContentType is what Notion derived from the filename at CREATE
+	// time. The send step must echo it back exactly: Notion compares the
+	// two and rejects a mismatch with a 400. Not optional in practice —
+	// see putMultipart.
+	ContentType string `json:"content_type,omitempty"`
 }
 
 // FileClient is the typed resource client for the Notion file-uploads
@@ -171,7 +178,7 @@ func (f *FileClient) UploadAs(ctx context.Context, path, displayName string) (*F
 
 	// Step 2: POST the file bytes to the pre-signed URL as
 	// multipart/form-data. Notion's docs specify the field name "file".
-	if err := f.putMultipart(ctx, createResp.UploadURL, path, filename); err != nil {
+	if err := f.putMultipart(ctx, createResp.UploadURL, path, filename, createResp.ContentType); err != nil {
 		return nil, fmt.Errorf("upload %q: send: %w", filename, err)
 	}
 
@@ -184,7 +191,7 @@ func (f *FileClient) UploadAs(ctx context.Context, path, displayName string) (*F
 // multipart/form-data POST with a single "file" part. The body is
 // buffered in memory (bounded by MaxFileUploadBytes) so the multipart
 // Content-Length is known ahead of the Notion API's strict parser.
-func (f *FileClient) putMultipart(ctx context.Context, uploadURL, path, filename string) error {
+func (f *FileClient) putMultipart(ctx context.Context, uploadURL, path, filename, contentType string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
@@ -193,7 +200,20 @@ func (f *FileClient) putMultipart(ctx context.Context, uploadURL, path, filename
 
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	part, err := mw.CreateFormFile("file", filename)
+	// Echo the content type Notion derived at create time.
+	//
+	// multipart.CreateFormFile hardcodes application/octet-stream, and
+	// Notion rejects the mismatch:
+	//
+	//   400 validation_error: Current file content type of
+	//   `application/octet-stream` does not match the original content
+	//   type of `text/plain; charset=utf-8`.
+	//
+	// So EVERY upload of a file with a recognisable type failed —
+	// blocks add-image, blocks add-file, pages set-icon, pages set-cover.
+	// The unit tests passed because the mock accepted any part header;
+	// only a real request could see it.
+	part, err := createFilePart(mw, filename, contentType)
 	if err != nil {
 		return fmt.Errorf("build multipart: %w", err)
 	}
@@ -230,3 +250,24 @@ func (f *FileClient) putMultipart(ctx context.Context, uploadURL, path, filename
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
+
+// createFilePart builds the "file" part with an explicit Content-Type.
+//
+// multipart.CreateFormFile cannot set one — it hardcodes
+// application/octet-stream — so the header is assembled by hand. The
+// Content-Disposition escaping mirrors what CreateFormFile does.
+func createFilePart(mw *multipart.Writer, filename, contentType string) (io.Writer, error) {
+	h := make(textproto.MIMEHeader)
+	h.Set("Content-Disposition",
+		fmt.Sprintf(`form-data; name="file"; filename="%s"`, quoteEscaper.Replace(filename)))
+	if contentType == "" {
+		// Only reachable when Notion told us nothing. It always does in
+		// practice; a hand-built response in a test might not.
+		contentType = "application/octet-stream"
+	}
+	h.Set("Content-Type", contentType)
+	return mw.CreatePart(h)
+}
+
+// quoteEscaper mirrors mime/multipart's own escaping for header values.
+var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
