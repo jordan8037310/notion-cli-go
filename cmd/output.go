@@ -287,6 +287,9 @@ func resetGlobalOutputFlags() {
 	globalPage = ""
 	globalResolveMentions = false
 	jsonErrorEmitted = false
+	// --watch is persistent, so a value parsed by one test would put every
+	// later test in this binary into a polling loop (#46).
+	globalWatch = ""
 	// blocksListType backs `blocks list --type`. pflag keeps a parsed
 	// value in its bound variable for the life of the process, so a test
 	// that ran `blocks list --type X` leaves the filter set for every

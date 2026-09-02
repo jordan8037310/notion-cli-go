@@ -467,7 +467,7 @@ Example:
 
 func init() {
 	rootCmd.AddCommand(blocksCmd)
-	blocksCmd.AddCommand(blocksListCmd)
+	blocksCmd.AddCommand(watchable(blocksListCmd))
 	blocksCmd.AddCommand(blocksAddCmd)
 	blocksCmd.AddCommand(blocksDeleteCmd)
 

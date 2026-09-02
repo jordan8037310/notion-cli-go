@@ -71,7 +71,7 @@ var rootCmd = &cobra.Command{
 			root.SilenceErrors = true
 			root.SilenceUsage = true
 		}
-		return nil
+		return validateWatchFlag(cmd)
 	},
 }
 
@@ -227,6 +227,12 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&globalJSON, "json", false, "Emit JSON/NDJSON to stdout (disables ANSI color)")
 	rootCmd.PersistentFlags().BoolVar(&globalPretty, "pretty", false, "Pretty-print JSON output (list commands emit a single indented JSON array; compact NDJSON is recommended for piping)")
 	rootCmd.PersistentFlags().StringVar(&globalOutput, "output", "", "Output format: text|json (alias for --json)")
+
+	// Re-poll a list command until interrupted. Persistent so the flag is
+	// spelled the same everywhere, with PersistentPreRunE rejecting it on
+	// the commands that do not loop rather than ignoring it there.
+	rootCmd.PersistentFlags().StringVar(&globalWatch, "watch", "",
+		"Re-run a list command every interval (e.g. 30s, 5m) until interrupted")
 
 	// Persistent page-targeting flag. resolvePageID translates aliases
 	// lazily so unknown aliases surface at command run time, not here.
