@@ -130,7 +130,10 @@ func withSearchMock(t *testing.T) *httptest.Server {
 // newClientForSearch returns a SearchClient bound to the current baseURL so
 // tests exercise the same wiring the cmd layer uses.
 func newClientForSearch() *SearchClient {
-	return NewSearchClient(NewClient("fakeKey", WithBaseURL(baseURL)))
+	// Retries off: these tests assert that an error SURFACES, not that it
+	// is retried, and the default policy would make each of them pay four
+	// real backoffs.
+	return NewSearchClient(NewClient("fakeKey", WithBaseURL(baseURL), WithMaxRetries(0)))
 }
 
 func TestSearch(t *testing.T) {

@@ -126,7 +126,9 @@ func TestClient_TimeoutActuallyFires(t *testing.T) {
 	}))
 	defer func() { close(block); srv.Close() }()
 
-	c := NewClient("k", WithBaseURL(srv.URL), WithTimeout(150*time.Millisecond))
+	// Retries off: this asserts the TIMEOUT fires, and retrying a hung
+	// server three more times would just multiply the wait.
+	c := NewClient("k", WithBaseURL(srv.URL), WithTimeout(150*time.Millisecond), WithMaxRetries(0))
 	req, err := c.newRequest(defaultCtx(), http.MethodGet, "/pages/x", nil)
 	if err != nil {
 		t.Fatalf("newRequest: %v", err)

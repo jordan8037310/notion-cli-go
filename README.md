@@ -166,11 +166,11 @@ notioncli blocks delete 5
 
 - **Teams**: the teams API is unavailable on Notion-Version 2026-03-11; the
   command returns a clear error rather than a raw 400 (issue #37).
-- **Retries**: the HTTP client does not yet honour `Retry-After` or back off on
-  429/5xx (issue #43). Long paginated runs against a rate-limited workspace can
-  fail mid-walk.
-- **No request timeout**: the HTTP client uses Go's default (none), so a hung
-  connection blocks indefinitely.
+- **Retries are conservative on writes by design**: 429 and 529 are always
+  retried, but 5xx is retried only for `GET` and `DELETE`. A 502 on a `POST` may
+  mean the write *did* land and the gateway lost the response, so replaying it
+  could create a duplicate. `PATCH` is excluded for the same reason — appending
+  block children is not idempotent. Those failures surface for you to decide on.
 
 Multi-page support landed via `--page` and aliases — the tool is no longer
 limited to a single page.
@@ -183,6 +183,17 @@ go test -race ./...
 ```
 
 Coverage sits around 87% with a 70% floor enforced by `make cover`.
+
+### Rate limits and retries
+
+Notion rate-limits at roughly 3 requests/second. The client retries
+transparently: `Retry-After` is honoured when the server sends it, otherwise
+exponential backoff with jitter, capped at 30s and 4 attempts. Backoff is
+interruptible — ctrl-C works during a wait.
+
+`4xx` is never retried; a malformed request surfaces immediately rather than
+being hammered. See Known Limitations for why writes are treated differently
+from reads.
 
 ### Running integration tests
 
