@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,10 @@ var (
 	pagesCreateParent    string
 	pagesCreateParentDB  string
 	pagesCreateTitle     string
+	pagesCreateProps     string
+	pagesCreateChildren  string
+	pagesCreateFromText  string
+	pagesUpdateProps2    string
 	pagesUpdateTitle     string
 	pagesUpdateProps     []string
 	pagesMoveParent      string
@@ -273,18 +278,51 @@ var pagesGetCmd = &cobra.Command{
 var pagesCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a new page under --parent (page) or --parent-database",
+	Long: `Create a page.
+
+--title is a shortcut for the title property. For any other property type —
+relation, people, status, multi-select, date, files — use --properties-json,
+which is passed to Notion verbatim, so the full property system is reachable
+without a flag per type.
+
+--children-json seeds the page body with a JSON array of blocks.
+--from-text seeds it from a text file, one paragraph per non-empty line.
+That is NOT a markdown parser: headings, lists and emphasis are written as
+literal text (see issue #45).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		parent, err := buildCreateParent(pagesCreateParent, pagesCreateParentDB)
 		if err != nil {
 			return jsonErrorOr(cmd, err)
 		}
+		// --children-json and --from-text both fill the same body slot,
+		// so taking one silently would discard the other's file.
+		if pagesCreateChildren != "" && pagesCreateFromText != "" {
+			return jsonErrorOr(cmd, fmt.Errorf(
+				"create page: --children-json and --from-text both set the page body; pass only one"))
+		}
+		props, err := readPagePropertiesFile(pagesCreateProps)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("create page: %w", err))
+		}
+		children, err := readChildrenFile(pagesCreateChildren)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("create page: %w", err))
+		}
+		if pagesCreateFromText != "" {
+			if children, err = blocksFromPlainText(pagesCreateFromText); err != nil {
+				return jsonErrorOr(cmd, fmt.Errorf("create page: %w", err))
+			}
+		}
+
 		pc, err := newPageClient()
 		if err != nil {
 			return jsonErrorOr(cmd, err)
 		}
 		page, err := pc.Create(context.Background(), utils.CreatePageRequest{
-			Parent: parent,
-			Title:  pagesCreateTitle,
+			Parent:     parent,
+			Title:      pagesCreateTitle,
+			Properties: props,
+			Children:   children,
 		})
 		if err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("create page: %w", err))
@@ -307,15 +345,37 @@ var pagesCreateCmd = &cobra.Command{
 var pagesUpdateCmd = &cobra.Command{
 	Use:   "update <id>",
 	Short: "Update a page's title and/or properties",
-	Args:  cobra.ExactArgs(1),
+	Long: `Update a page.
+
+--property key=value is a convenience for STRING-valued properties only.
+For any other type — relation, people, status, multi-select, date, files —
+use --properties-json, which is passed to Notion verbatim.
+
+When both are given, --properties-json is the base and --property overlays
+it, so a script can reuse one template and vary a field per invocation.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pc, err := newPageClient()
 		if err != nil {
 			return jsonErrorOr(cmd, err)
 		}
 		req := utils.UpdatePageRequest{Title: pagesUpdateTitle}
+
+		// --properties-json is the base; --property overlays it. An
+		// explicit flag on the command line beating a file is the least
+		// surprising precedence, and it lets a script reuse one JSON
+		// template while varying a field per invocation.
+		jsonProps, err := readPagePropertiesFile(pagesUpdateProps2)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("update page: %w", err))
+		}
+		if len(jsonProps) > 0 {
+			req.Properties = jsonProps
+		}
 		if len(pagesUpdateProps) > 0 {
-			req.Properties = map[string]interface{}{}
+			if req.Properties == nil {
+				req.Properties = map[string]interface{}{}
+			}
 			for _, raw := range pagesUpdateProps {
 				key, val, err := parseProperty(raw)
 				if err != nil {
@@ -580,9 +640,13 @@ func init() {
 
 	pagesCreateCmd.Flags().StringVar(&pagesCreateParent, "parent", "", "Parent page ID (mutually exclusive with --parent-database)")
 	pagesCreateCmd.Flags().StringVar(&pagesCreateParentDB, "parent-database", "", "Parent database ID for database-parented pages (mutually exclusive with --parent)")
+	pagesCreateCmd.Flags().StringVar(&pagesCreateProps, "properties-json", "", "Path to a JSON object of Notion property values, passed through verbatim")
+	pagesCreateCmd.Flags().StringVar(&pagesCreateChildren, "children-json", "", "Path to a JSON array of blocks for the page body")
+	pagesCreateCmd.Flags().StringVar(&pagesCreateFromText, "from-text", "", "Path to a text file; each non-empty line becomes a paragraph block (not a markdown parser — see #45)")
 	pagesCreateCmd.Flags().StringVar(&pagesCreateTitle, "title", "", "Title for the new page")
 
 	pagesUpdateCmd.Flags().StringVar(&pagesUpdateTitle, "title", "", "New title for the page")
+	pagesUpdateCmd.Flags().StringVar(&pagesUpdateProps2, "properties-json", "", "Path to a JSON object of Notion property values, passed through verbatim; covers types --property cannot")
 	pagesUpdateCmd.Flags().StringArrayVar(&pagesUpdateProps, "property", nil,
 		`Set a property (repeatable). Three forms:
   Key=Value                        rich_text (back-compat)
@@ -602,4 +666,99 @@ Examples:
 	pagesMoveCmd.Flags().StringVar(&pagesMoveParent, "parent", "", "New parent page ID (required)")
 
 	pagesDuplicateCmd.Flags().StringVar(&pagesDuplicateParent, "parent", "", "Parent page ID for the duplicate (required)")
+}
+
+// readPagePropertiesFile reads a --properties-json file into the loose
+// property map POST/PATCH /v1/pages expects.
+//
+// The payload is passed through VERBATIM. Notion's property-value system
+// has ~20 shapes (relation, people, status, rollup, formula, files, …) and
+// modelling them here would be a large typed surface that goes stale every
+// time Notion adds one — the reason issue #40 asks for a JSON passthrough
+// rather than a flag per type.
+func readPagePropertiesFile(path string) (map[string]interface{}, error) {
+	if path == "" {
+		return nil, nil
+	}
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(bytes.TrimSpace(buf)) == 0 {
+		return nil, fmt.Errorf("%s is empty; omit --properties-json instead of passing an empty file", path)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		return nil, fmt.Errorf("parse %s as a properties object: %w", path, err)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s contains no properties", path)
+	}
+	return out, nil
+}
+
+// readChildrenFile reads a --children-json file into the block array the
+// create body expects. Also passed through verbatim, for the same reason.
+func readChildrenFile(path string) ([]map[string]interface{}, error) {
+	if path == "" {
+		return nil, nil
+	}
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if len(bytes.TrimSpace(buf)) == 0 {
+		return nil, fmt.Errorf("%s is empty; omit --children-json instead of passing an empty file", path)
+	}
+	var out []map[string]interface{}
+	if err := json.Unmarshal(buf, &out); err != nil {
+		return nil, fmt.Errorf("parse %s as a JSON array of blocks: %w", path, err)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s contains no blocks", path)
+	}
+	return out, nil
+}
+
+// blocksFromPlainText turns a text file into one paragraph block per
+// non-empty line.
+//
+// This is deliberately NOT a markdown parser. It does not read headings,
+// lists, links or emphasis — every line becomes a paragraph verbatim. Real
+// markdown-to-blocks conversion is issue #45; promising it here would mean
+// silently dropping the formatting a user wrote. The flag is named
+// --from-text rather than #40's proposed --from-markdown for exactly that
+// reason: the name should not claim a fidelity the code does not have.
+//
+// Blank lines are skipped: Notion renders an empty paragraph as visible
+// dead space, and a file's blank lines are almost always separators rather
+// than content.
+func blocksFromPlainText(path string) ([]map[string]interface{}, error) {
+	if path == "" {
+		return nil, nil
+	}
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	var blocks []map[string]interface{}
+	for _, line := range strings.Split(string(buf), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		blocks = append(blocks, map[string]interface{}{
+			"object": "block",
+			"type":   "paragraph",
+			"paragraph": map[string]interface{}{
+				"rich_text": []map[string]interface{}{
+					{"type": "text", "text": map[string]interface{}{"content": line}},
+				},
+			},
+		})
+	}
+	if len(blocks) == 0 {
+		return nil, fmt.Errorf("%s has no non-empty lines", path)
+	}
+	return blocks, nil
 }
