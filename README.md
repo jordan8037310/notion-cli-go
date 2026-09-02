@@ -131,6 +131,20 @@ with a presigned URL — which expires, so the block is re-read on every run.
   a markdown parser. `--from-markdown` is: the file is parsed by Notion into real
   blocks, and a leading `# Heading` becomes the page title (Notion silently drops
   it otherwise).
+- `pages export <id>`: Export a page and its sub-pages. `--format json` (the
+  default) writes one JSON document holding each page, its blocks and its
+  children to stdout; `--format md --out DIR` writes a markdown file per page
+  with sub-pages as subdirectories; `--format tree` prints an outline and writes
+  nothing, so it is the cheap way to size an export first. `--depth 0` is the
+  page alone, `1` adds its sub-pages, `-1` (default) is the whole tree. Markdown
+  comes from Notion's renderer, so it includes content inside toggles, columns
+  and synced blocks. Pages the integration cannot read are listed on stderr and
+  make the exit code non-zero rather than silently shrinking the backup.
+
+  ```bash
+  notioncli pages export <id> --format md --out ./backup
+  ```
+
 - `pages append-markdown <id> --from FILE` / `pages replace-markdown <id> --from
   FILE`: Write markdown into an existing page. Notion parses it server-side, so
   headings, lists, to-dos, code fences with their language, quotes, dividers and

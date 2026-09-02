@@ -129,7 +129,13 @@ func shouldSuppressBanner() bool {
 	// `notioncli pages markdown <id> > page.md`, and a cosmetic banner on
 	// the first line corrupts that file — the same class of problem as the
 	// banner in front of a JSON payload (#67).
-	if len(args) >= 2 && args[0] == "pages" && args[1] == "markdown" {
+	//
+	// `pages export` is the same shape: its default --format json writes
+	// one JSON document to stdout, so the banner made `pages export <id> |
+	// jq` fail on the very first byte. Suppressed for every format rather
+	// than only json — tree is an outline someone pipes to a pager, and md
+	// prints one summary line that reads fine without a banner over it.
+	if len(args) >= 2 && args[0] == "pages" && (args[1] == "markdown" || args[1] == "export") {
 		return true
 	}
 

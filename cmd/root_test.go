@@ -100,6 +100,15 @@ func TestShouldSuppressBanner_JSONForms(t *testing.T) {
 		{"json_equals_false", []string{"notioncli", "list", "--json=false"}, false},
 		{"json_equals_0", []string{"notioncli", "list", "--json=0"}, false},
 		{"json_equals_garbage", []string{"notioncli", "list", "--json=maybe"}, false},
+
+		// `pages export` writes a JSON document to stdout by default, so a
+		// banner in front of it broke `pages export <id> | jq` on the first
+		// byte — the live-caught half of #44. Suppressed for every format,
+		// same as `pages markdown`.
+		{"pages_export_default", []string{"notioncli", "pages", "export", "id"}, true},
+		{"pages_export_tree", []string{"notioncli", "pages", "export", "id", "--format", "tree"}, true},
+		{"pages_export_md", []string{"notioncli", "pages", "export", "id", "--format", "md", "-o", "d"}, true},
+		{"pages_other_subcommand_keeps_banner", []string{"notioncli", "pages", "get", "id"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
