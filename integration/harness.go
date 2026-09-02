@@ -287,3 +287,8 @@ func nonFlagArgs(args []string) []string {
 func writeFileHelper(path, body string) error {
 	return os.WriteFile(path, []byte(body), 0o644)
 }
+
+// writeFileHelperBytes writes binary artefact content (a PNG fixture, say).
+func writeFileHelperBytes(path string, body []byte) error {
+	return os.WriteFile(path, body, 0o644)
+}
