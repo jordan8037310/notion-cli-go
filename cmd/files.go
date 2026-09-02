@@ -31,32 +31,72 @@ func newFileClient() (*utils.FileClient, error) {
 	return utils.NewFileClient(c), nil
 }
 
+// uploadAndAppend is the shared body of `blocks add-image` and
+// `blocks add-file`: upload the local file, then append a media block
+// referencing it.
+//
+// The append used to be "deferred", so both commands uploaded and reported
+// success while creating nothing — a page listed no blocks afterwards. Same
+// shape as issue #82, which fixed `pages set-icon` and left these two
+// behind. The plumbing arrived with that work: AddBlock already takes
+// WithFileUploadID (issue #124).
+//
+// Order matters. resolvePageID runs BEFORE the upload so a missing or
+// unresolvable --page fails without first leaving an orphaned file upload
+// in the workspace — the same reasoning as set-icon's page probe.
+func uploadAndAppend(cmd *cobra.Command, blockType, path, displayName string) error {
+	pageID, err := resolvePageID()
+	if err != nil {
+		return jsonErrorOr(cmd, fmt.Errorf("blocks add-%s: %w", blockType, err))
+	}
+	fc, err := newFileClient()
+	if err != nil {
+		return jsonErrorOr(cmd, err)
+	}
+	ref, err := fc.UploadAs(context.Background(), path, displayName)
+	if err != nil {
+		return jsonErrorOr(cmd, fmt.Errorf("add-%s: %w", blockType, err))
+	}
+
+	apiKey, _ := utils.SetAPIConfig()
+	if err := utils.AddBlock(apiKey, pageID, blockType, "", utils.WithFileUploadID(ref.ID)); err != nil {
+		return jsonErrorOr(cmd, fmt.Errorf(
+			"add-%s: uploaded %s (id=%s) but could not append the block: %w",
+			blockType, ref.Name, ref.ID, err))
+	}
+
+	name := ref.Name
+	if displayName != "" {
+		name = displayName
+	}
+	if globalJSON {
+		return jsonErrorOr(cmd, emitOK(cmd.OutOrStdout(), map[string]interface{}{
+			"action":  "add-" + blockType,
+			"id":      ref.ID,
+			"name":    name,
+			"page_id": pageID,
+			"ref":     ref,
+		}))
+	}
+	color.Green("Added %s block on page %s: %s (file id=%s)", blockType, pageID, name, ref.ID)
+	return nil
+}
+
 // blocksAddImageCmd uploads a local image via the Notion file-upload
 // endpoint and prints the resulting FileRef. Appending it as an image
 // block on the configured page is deferred to a follow-up — the block
 // PATCH is not issued by this command today.
 var blocksAddImageCmd = &cobra.Command{
 	Use:   "add-image <path>",
-	Short: "Upload an image (block append is deferred)",
-	Long: `Upload a local image file to Notion and print the resulting
-FileRef. Appending the upload as an image block on the page configured
-via NOTION_PAGE_ID is deferred to a follow-up; this command currently
-returns the file id and name only.`,
+	Short: "Upload a local image and append it as an image block",
+	Long: `Upload a local image to Notion and append it as an image block on
+the target page (--page, or NOTION_PAGE_ID).
+
+The page is resolved before the upload, so a bad target fails without
+leaving an orphaned file upload behind.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fc, err := newFileClient()
-		if err != nil {
-			return jsonErrorOr(cmd, err)
-		}
-		ref, err := fc.Upload(context.Background(), args[0])
-		if err != nil {
-			return jsonErrorOr(cmd, fmt.Errorf("add-image: %w", err))
-		}
-		if globalJSON {
-			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), ref))
-		}
-		color.Green("Uploaded image %s (id=%s) — block append deferred", ref.Name, ref.ID)
-		return nil
+		return uploadAndAppend(cmd, "image", args[0], "")
 	},
 }
 
@@ -66,42 +106,16 @@ returns the file id and name only.`,
 // the displayed filename in Notion.
 var blocksAddFileCmd = &cobra.Command{
 	Use:   "add-file <path>",
-	Short: "Upload a file (block append is deferred)",
-	Long: `Upload a local file to Notion and print the resulting FileRef.
-Appending the upload as a file block on the page configured via
-NOTION_PAGE_ID is deferred to a follow-up; this command currently
-returns the file id and name only.`,
+	Short: "Upload a local file and append it as a file block",
+	Long: `Upload a local file to Notion and append it as a file block on the
+target page (--page, or NOTION_PAGE_ID).
+
+--name overrides the label Notion stores and displays. The page is resolved
+before the upload, so a bad target fails without leaving an orphaned file
+upload behind.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fc, err := newFileClient()
-		if err != nil {
-			return jsonErrorOr(cmd, err)
-		}
-		// Pass --name through to UploadAs so Notion stores the file
-		// under the caller's label (used in the create-request filename
-		// and the multipart "file" part name). When --name is empty,
-		// UploadAs falls back to the source path's basename.
-		ref, err := fc.UploadAs(context.Background(), args[0], blocksAddFileName)
-		if err != nil {
-			return jsonErrorOr(cmd, fmt.Errorf("add-file: %w", err))
-		}
-		name := ref.Name
-		if globalJSON {
-			// Emit an action envelope so the caller's --name is visible
-			// in the JSON stream. ref itself is nested so consumers can
-			// still pick the raw upload response off it; `name` on the
-			// envelope is the name the caller asked for (the value
-			// displayed in Notion), which can differ from ref.Name when
-			// --name overrides it.
-			return jsonErrorOr(cmd, emitOK(cmd.OutOrStdout(), map[string]interface{}{
-				"action": "add-file",
-				"id":     ref.ID,
-				"name":   name,
-				"ref":    ref,
-			}))
-		}
-		color.Green("Uploaded file %s (id=%s) — block append deferred", name, ref.ID)
-		return nil
+		return uploadAndAppend(cmd, "file", args[0], blocksAddFileName)
 	},
 }
 
