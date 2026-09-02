@@ -174,10 +174,11 @@ func TestBlockTypes_GetBlockContent(t *testing.T) {
 			want: "[ single | abc | Project: Q2 Plan ]",
 		},
 		{
-			// Cells render through RenderRichText, so mention markers
-			// match every other block type's inline rich-text rendering.
-			// A plain concatenation would emit the mention's PlainText
-			// ("Roadmap"); only RenderRichText produces "[page:p-1]".
+			// Cells render through RenderRichText, so a mention is
+			// bracketed as a mention rather than concatenated as bare
+			// text. Notion supplies the title in plain_text, so the
+			// rendered form is "[Roadmap]" — a plain concatenation would
+			// give an unmarked "Roadmap" (issue #41).
 			// Annotations render as ANSI attributes, which fatih/color
 			// suppresses under a non-TTY, so bold is bare here.
 			name: "table_row annotated and mention cells",
@@ -191,7 +192,7 @@ func TestBlockTypes_GetBlockContent(t *testing.T) {
 					},
 				},
 			},
-			want: "[ plain bold | see [page:p-1] ]",
+			want: "[ plain bold | see [Roadmap] ]",
 		},
 		{
 			name: "synced_block original",
@@ -846,12 +847,14 @@ func TestTableRow_PlainPathIsANSIFree(t *testing.T) {
 // NoPageResolver, so --resolve-mentions silently did nothing inside tables
 // and a cell mention rendered as a bare [page:<uuid>].
 func TestTableRow_ResolverReachesCells(t *testing.T) {
+	// plain_text is empty here on purpose. Notion normally supplies the
+	// title and it wins outright (#41), so the resolver is only reached in
+	// the degraded case — which is exactly what this test is about.
 	row := Block{
 		Type: "table_row",
 		TableRow: &TableRowBlock{
 			Cells: [][]RichText{
-				{{Type: "mention", PlainText: "Roadmap",
-					Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-1"}}}},
+				{{Type: "mention", Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-1"}}}},
 			},
 		},
 	}
@@ -862,10 +865,26 @@ func TestTableRow_ResolverReachesCells(t *testing.T) {
 		t.Errorf("resolver did not reach table cells; got %q", got)
 	}
 
-	// Without one, it falls back to the legacy marker.
-	fallback := GetBlockContentPlain(row)
-	if !strings.Contains(fallback, "[page:p-1]") {
-		t.Errorf("NoPageResolver should yield the legacy marker; got %q", fallback)
+	// With neither plain_text nor a resolver, the legacy marker remains
+	// the honest last resort.
+	noResolver := GetBlockContentPlain(row)
+	if !strings.Contains(noResolver, "[page:p-1]") {
+		t.Errorf("no title available anywhere should yield the marker; got %q", noResolver)
+	}
+
+	// And when Notion DID send the title, it wins with no resolver call —
+	// the whole point of #41.
+	withTitle := Block{
+		Type: "table_row",
+		TableRow: &TableRowBlock{
+			Cells: [][]RichText{
+				{{Type: "mention", PlainText: "Roadmap",
+					Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-1"}}}},
+			},
+		},
+	}
+	if got := GetBlockContentPlain(withTitle); !strings.Contains(got, "[Roadmap]") {
+		t.Errorf("plain_text title should render with no resolver at all; got %q", got)
 	}
 }
 

@@ -118,6 +118,22 @@ func renderMention(ctx context.Context, m *Mention, fallback string, resolver Pa
 		}
 	case "page":
 		if m.Page != nil && m.Page.ID != "" {
+			// Notion already renders the mention's title into plain_text
+			// and sends it inline — verified live, and it holds even for
+			// a page that has since been trashed. Use it: it is free,
+			// it is Notion's own rendering, and it is what a human wants
+			// to read.
+			//
+			// This used to be discarded in favour of "[page:<uuid>]",
+			// which meant the default output showed a raw id while the
+			// title sat unused in the same response — and
+			// --resolve-mentions then spent one API call per unique page
+			// re-fetching exactly that title. See issue #41.
+			if fallback != "" {
+				return "[" + fallback + "]"
+			}
+			// plain_text empty: fall back to the resolver, which is now
+			// the flag's only remaining purpose.
 			if resolver != nil {
 				if title, err := resolver.ResolvePageTitle(ctx, m.Page.ID); err == nil && title != "" {
 					return "[" + title + "]"
@@ -127,6 +143,11 @@ func renderMention(ctx context.Context, m *Mention, fallback string, resolver Pa
 		}
 	case "database":
 		if m.Database != nil && m.Database.ID != "" {
+			// Same as page mentions: Notion supplies the database title
+			// in plain_text, and this rendered a raw uuid instead.
+			if fallback != "" {
+				return "{" + fallback + "}"
+			}
 			return "{db:" + m.Database.ID + "}"
 		}
 	case "date":

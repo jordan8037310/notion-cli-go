@@ -497,3 +497,101 @@ func TestRenderRichTextWithResolver_EmptyInput(t *testing.T) {
 		t.Errorf("empty input = %q, want empty", got)
 	}
 }
+
+// TestRenderMention_PlainTextWinsWithoutAnyAPICall is the point of issue
+// #41, and it turned out to invert the issue's premise.
+//
+// #41 asked to extend --resolve-mentions to more commands. The real finding
+// is that the resolver is largely unnecessary: Notion already renders a
+// mention's title into the run's plain_text and sends it inline — verified
+// live, and it holds even for a page that has since been trashed.
+//
+// Before this, the default rendering DISCARDED that title and printed
+// "[page:<uuid>]", and --resolve-mentions then spent one API call per
+// unique page re-fetching exactly the title already in the response.
+func TestRenderMention_PlainTextWinsWithoutAnyAPICall(t *testing.T) {
+	rt := []RichText{
+		{Type: "text", PlainText: "see "},
+		{Type: "mention", PlainText: "Project Plan",
+			Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-42"}}},
+	}
+
+	// NoPageResolver errors on every lookup, so a resolver-dependent
+	// implementation would fall back to the uuid marker here.
+	got := RenderRichText(rt)
+	if got != "see [Project Plan]" {
+		t.Errorf("RenderRichText = %q, want %q — the title Notion sent should render with no lookup",
+			got, "see [Project Plan]")
+	}
+	if strings.Contains(got, "p-42") {
+		t.Errorf("raw page id leaked into human output: %q", got)
+	}
+}
+
+// TestRenderMention_ResolverOnlyForTheDegradedCase pins the resolver's
+// remaining purpose: plain_text absent.
+func TestRenderMention_ResolverOnlyForTheDegradedCase(t *testing.T) {
+	noText := []RichText{
+		{Type: "mention", Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-9"}}},
+	}
+
+	// No plain_text, no resolver → the honest marker.
+	if got := RenderRichText(noText); got != "[page:p-9]" {
+		t.Errorf("with nothing to go on, want the marker; got %q", got)
+	}
+
+	// No plain_text, resolver present → the resolver earns its call.
+	got := RenderRichTextWithResolver(context.Background(), noText, fixedResolver{"Recovered Title"})
+	if got != "[Recovered Title]" {
+		t.Errorf("resolver should supply the title when plain_text is empty; got %q", got)
+	}
+
+	// plain_text present → the resolver is NOT consulted at all.
+	withText := []RichText{
+		{Type: "mention", PlainText: "Inline Title",
+			Mention: &Mention{Type: "page", Page: &PageMention{ID: "p-9"}}},
+	}
+	counting := &countingResolver{title: "Should Not Be Used"}
+	if got := RenderRichTextWithResolver(context.Background(), withText, counting); got != "[Inline Title]" {
+		t.Errorf("plain_text must win over the resolver; got %q", got)
+	}
+	if counting.calls != 0 {
+		t.Errorf("resolver was called %d time(s) despite plain_text being present — "+
+			"that is the wasted API call #41 removes", counting.calls)
+	}
+}
+
+// TestRenderMention_DatabaseUsesPlainTextToo covers the same defect on
+// database mentions, which rendered "{db:<uuid>}".
+func TestRenderMention_DatabaseUsesPlainTextToo(t *testing.T) {
+	rt := []RichText{
+		{Type: "mention", PlainText: "Q2 Tracker",
+			Mention: &Mention{Type: "database", Database: &DatabaseMention{ID: "db-1"}}},
+	}
+	if got := RenderRichText(rt); got != "{Q2 Tracker}" {
+		t.Errorf("database mention = %q, want the title Notion sent", got)
+	}
+
+	bare := []RichText{
+		{Type: "mention", Mention: &Mention{Type: "database", Database: &DatabaseMention{ID: "db-1"}}},
+	}
+	if got := RenderRichText(bare); got != "{db:db-1}" {
+		t.Errorf("with no plain_text, want the marker; got %q", got)
+	}
+}
+
+type fixedResolver struct{ title string }
+
+func (f fixedResolver) ResolvePageTitle(context.Context, string) (string, error) {
+	return f.title, nil
+}
+
+type countingResolver struct {
+	title string
+	calls int
+}
+
+func (c *countingResolver) ResolvePageTitle(context.Context, string) (string, error) {
+	c.calls++
+	return c.title, nil
+}

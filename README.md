@@ -184,8 +184,10 @@ carries a `depth` field in `--json`.
   object per line — for piping into `jq`.
 - `--pretty`: Pretty-print JSON. List commands emit a single indented array
   instead of NDJSON.
-- `--resolve-mentions`: Expand page mentions from `[page:<id>]` to `[<title>]`
-  in human output. Costs one API call per distinct page, cached per invocation.
+- `--resolve-mentions`: Rarely needed. Notion sends a mention's title inline and
+  the CLI uses it automatically, so mentions already render as `[Title]` at no
+  cost. This flag only helps in the uncommon case where that inline title is
+  empty, and then costs one API call per distinct page, cached per invocation.
 
 ### Other Commands
 
