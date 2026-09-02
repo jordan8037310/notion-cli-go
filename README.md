@@ -71,7 +71,7 @@ You can interact with the tool using the built binary:
 The `blocks` subcommand allows you to work with all Notion block types:
 
 ```bash
-# List all blocks
+# List all blocks (top level only)
 notioncli blocks list
 
 # List only specific block types
@@ -105,6 +105,11 @@ notioncli blocks delete 5
   25-reference cap and may be truncated.
 - `pages property <page-id> <property-id>`: Read one property in full, past that
   cap. Property ids come from `pages get <id> --json`.
+- `pages markdown <page-id>`: Render a whole page as markdown, **including nested
+  content**. The only single command that returns a page's complete text —
+  `blocks list` is top-level only. Warns on stderr if Notion truncated the render
+  or could not handle particular blocks, so `pages markdown <id> > page.md`
+  produces a clean file.
 - `pages create`: Create a page under a page or database parent.
 - `pages update <id>`: Update a page's title or properties.
 - `pages archive <id>` / `pages unarchive <id>`: Move a page to or from the trash.
@@ -145,6 +150,19 @@ notioncli blocks delete 5
   Manage data source views. A view reads a data source and belongs to a database
   container, and Notion requires both ids.
 - `teams`: Workspace teams (see Known Limitations).
+
+### Reading a whole page
+
+`blocks list` returns **top-level blocks only** — toggles, columns and tables
+hide their contents. Two ways to see everything:
+
+```bash
+notioncli blocks list --page <id> --recursive   # structured, indented by depth
+notioncli pages markdown <id> > page.md         # Notion's own markdown render
+```
+
+`--recursive` accepts `--max-depth N` (1 = top level only, 0 = unlimited) and
+carries a `depth` field in `--json`.
 
 ### Global Flags
 

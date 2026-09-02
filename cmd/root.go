@@ -124,6 +124,15 @@ func Execute() {
 // invocations keep the banner they always had.
 func shouldSuppressBanner() bool {
 	args := os.Args[1:]
+
+	// `pages markdown` emits a document, not a report. Its whole purpose is
+	// `notioncli pages markdown <id> > page.md`, and a cosmetic banner on
+	// the first line corrupts that file — the same class of problem as the
+	// banner in front of a JSON payload (#67).
+	if len(args) >= 2 && args[0] == "pages" && args[1] == "markdown" {
+		return true
+	}
+
 	for i, a := range args {
 		switch {
 		case a == "--json", a == "--output=json":

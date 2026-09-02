@@ -281,3 +281,30 @@ func TestJSONMode_BareErrorStillEmitsEnvelope(t *testing.T) {
 		t.Errorf("envelope should carry the real validation error, got %q", msg)
 	}
 }
+
+// TestBannerSuppressedForPagesMarkdown guards the point of the command.
+// `pages markdown <id> > page.md` must produce a clean document — a
+// cosmetic banner on the first line corrupts the file, the same class of
+// problem as a banner in front of a JSON payload (#67).
+func TestBannerSuppressedForPagesMarkdown(t *testing.T) {
+	orig := os.Args
+	t.Cleanup(func() { os.Args = orig })
+
+	for _, tt := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"pages markdown suppresses", []string{"notioncli", "pages", "markdown", "abc"}, true},
+		{"pages markdown with flags", []string{"notioncli", "pages", "markdown", "abc", "--page", "x"}, true},
+		{"other pages commands keep it", []string{"notioncli", "pages", "get", "abc"}, false},
+		{"a page named markdown elsewhere keeps it", []string{"notioncli", "blocks", "markdown"}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Args = tt.args
+			if got := shouldSuppressBanner(); got != tt.want {
+				t.Errorf("shouldSuppressBanner(%v) = %v, want %v", tt.args[1:], got, tt.want)
+			}
+		})
+	}
+}
