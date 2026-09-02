@@ -128,7 +128,16 @@ with a presigned URL — which expires, so the block is re-read on every run.
   property system through verbatim (relation, people, status, multi-select,
   date, files). `--children-json` seeds the body from a block array, or
   `--from-text` from a text file, one paragraph per non-empty line — that is not
-  a markdown parser.
+  a markdown parser. `--from-markdown` is: the file is parsed by Notion into real
+  blocks, and a leading `# Heading` becomes the page title (Notion silently drops
+  it otherwise).
+- `pages append-markdown <id> --from FILE` / `pages replace-markdown <id> --from
+  FILE`: Write markdown into an existing page. Notion parses it server-side, so
+  headings, lists, to-dos, code fences with their language, quotes, dividers and
+  inline emphasis all land as real blocks. `append-markdown --prepend` inserts at
+  the top instead of the bottom. `replace-markdown` is destructive — it removes
+  every block on the page — but never deletes child pages or child databases.
+
 - `pages create-many --from FILE`: Create many pages from a JSON array or a
   JSONL stream, one entry per page. Each entry takes `parent` (a page id),
   `parent_database` (a database id), `title`, `properties` and `children` — the

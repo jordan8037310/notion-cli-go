@@ -92,6 +92,12 @@ type CreatePageRequest struct {
 	Title      string                   `json:"-"`
 	Properties map[string]interface{}   `json:"properties,omitempty"`
 	Children   []map[string]interface{} `json:"children,omitempty"`
+	// Markdown seeds the page body from a markdown document, parsed by
+	// Notion server-side (see utils/markdown.go for why the parsing is
+	// not done here). Mutually exclusive with Children in practice —
+	// Notion accepts both keys but the CLI rejects the combination
+	// rather than let one silently win.
+	Markdown string `json:"markdown,omitempty"`
 }
 
 // UpdatePageRequest is the body for PATCH /v1/pages/{id}. All fields are
@@ -351,6 +357,9 @@ func (p *PageClient) createResolved(ctx context.Context, parent PageParent, titl
 	}
 	if len(req.Children) > 0 {
 		body["children"] = req.Children
+	}
+	if req.Markdown != "" {
+		body["markdown"] = req.Markdown
 	}
 	httpReq, err := p.c.newRequest(ctx, http.MethodPost, "/pages", body)
 	if err != nil {
