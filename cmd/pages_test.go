@@ -514,6 +514,10 @@ func resetPagesFlags() {
 	pagesAppendMDFrom = ""
 	pagesAppendMDPrepend = false
 	pagesReplaceMDFrom = ""
+	// Added with #44.
+	pagesExportDepth = -1
+	pagesExportFormat = "json"
+	pagesExportOut = ""
 }
 
 // TestPagesGetDispatch runs `pages get <id>` end-to-end against the mock.
