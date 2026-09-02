@@ -76,7 +76,15 @@ func (m *resolveMentionsMockServer) handle(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// mentionBlock is a page-mention-bearing to_do fixture. The mock
+// mentionBlock is a page-mention-bearing to_do fixture.
+//
+// plainText is empty in these tests on purpose. Notion sends the mentioned
+// page's TITLE in plain_text and it now wins outright (#41), so the
+// resolver is only reached in the degraded case — which is what these
+// tests are about. This fixture used to hardcode "[page:<id>]", a shape
+// Notion never sends.
+//
+// The mock
 // server's /blocks/pageID/children endpoint returns these.
 func mentionBlock(id, pageID string) utils.Block {
 	return utils.Block{
@@ -88,9 +96,8 @@ func mentionBlock(id, pageID string) utils.Block {
 			Checked: false,
 			RichText: []utils.RichText{
 				{
-					Type:      "mention",
-					PlainText: "[page:" + pageID + "]",
-					Mention:   &utils.Mention{Type: "page", Page: &utils.PageMention{ID: pageID}},
+					Type:    "mention",
+					Mention: &utils.Mention{Type: "page", Page: &utils.PageMention{ID: pageID}},
 				},
 			},
 		},

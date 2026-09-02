@@ -18,7 +18,18 @@ import (
 // pageMention returns a to_do block whose rich_text array is a single
 // page-mention run referencing pageID. Used to seed the mock block list
 // with repeated mentions of the same page id so we can assert caching.
-func pageMentionBlock(id, pageID string) Block {
+// pageMentionBlock builds a to_do carrying one page mention.
+//
+// plainText is what Notion puts in the run's plain_text. The real API sends
+// the mentioned page's TITLE there — verified live, and it holds even for a
+// page that has since been trashed. This fixture used to hardcode
+// "[page:<id>]", i.e. the marker the CLI itself produced, which is not a
+// shape Notion ever sends; that fiction is why the resolver was built to
+// re-fetch a title the response already contained (issue #41).
+//
+// Pass "" to model the degraded case where plain_text is absent, which is
+// the only situation the resolver is still needed for.
+func pageMentionBlock(id, pageID, plainText string) Block {
 	return Block{
 		Object:         "block",
 		ID:             id,
@@ -29,7 +40,7 @@ func pageMentionBlock(id, pageID string) Block {
 			RichText: []RichText{
 				{
 					Type:      "mention",
-					PlainText: "[page:" + pageID + "]",
+					PlainText: plainText,
 					Mention:   &Mention{Type: "page", Page: &PageMention{ID: pageID}},
 				},
 			},
@@ -103,7 +114,7 @@ func (m *resolverFormatMockServer) handle(w http.ResponseWriter, r *http.Request
 func TestFormatAllBlocksWithResolver_ExpandsTitle(t *testing.T) {
 	withNoColor(t)
 
-	blocks := []Block{pageMentionBlock("b-1", "p-42")}
+	blocks := []Block{pageMentionBlock("b-1", "p-42", "")}
 	m := newResolverFormatMockServer(t, blocks, map[string]string{"p-42": "Project Plan"})
 
 	bc := NewBlockClient(m.client())
@@ -134,7 +145,7 @@ func TestFormatAllBlocksWithResolver_ExpandsTitle(t *testing.T) {
 func TestFormatAllBlocksWithResolver_NoResolverPreservesMarker(t *testing.T) {
 	withNoColor(t)
 
-	blocks := []Block{pageMentionBlock("b-1", "p-1")}
+	blocks := []Block{pageMentionBlock("b-1", "p-1", "")}
 	m := newResolverFormatMockServer(t, blocks, map[string]string{"p-1": "Should Not Be Used"})
 
 	bc := NewBlockClient(m.client())
@@ -160,9 +171,9 @@ func TestFormatAllBlocksWithResolver_CachingHitCount(t *testing.T) {
 	withNoColor(t)
 
 	blocks := []Block{
-		pageMentionBlock("b-1", "p-repeat"),
-		pageMentionBlock("b-2", "p-repeat"),
-		pageMentionBlock("b-3", "p-repeat"),
+		pageMentionBlock("b-1", "p-repeat", ""),
+		pageMentionBlock("b-2", "p-repeat", ""),
+		pageMentionBlock("b-3", "p-repeat", ""),
 	}
 	m := newResolverFormatMockServer(t, blocks, map[string]string{"p-repeat": "Runbook"})
 
@@ -197,9 +208,9 @@ func TestFormatAllBlocksWithResolver_NotFoundFallsBack(t *testing.T) {
 	withNoColor(t)
 
 	blocks := []Block{
-		pageMentionBlock("b-1", "p-missing"),
-		pageMentionBlock("b-2", "p-missing"),
-		pageMentionBlock("b-3", "p-missing"),
+		pageMentionBlock("b-1", "p-missing", ""),
+		pageMentionBlock("b-2", "p-missing", ""),
+		pageMentionBlock("b-3", "p-missing", ""),
 	}
 	// No entry for p-missing → 404 on every GET.
 	m := newResolverFormatMockServer(t, blocks, map[string]string{})
@@ -231,7 +242,7 @@ func TestFormatAllBlocksWithResolver_NotFoundFallsBack(t *testing.T) {
 func TestFormatAllBlocks_LegacyDelegatesToResolverAware(t *testing.T) {
 	withNoColor(t)
 
-	blocks := []Block{pageMentionBlock("b-1", "p-1")}
+	blocks := []Block{pageMentionBlock("b-1", "p-1", "")}
 	m := newResolverFormatMockServer(t, blocks, map[string]string{"p-1": "Unused"})
 
 	bc := NewBlockClient(m.client())
@@ -265,7 +276,7 @@ func (m *resolverFormatMockServer) client() *Client {
 func TestGetBlockContentPlainWithResolver(t *testing.T) {
 	withNoColor(t)
 
-	block := pageMentionBlock("b-1", "p-x")
+	block := pageMentionBlock("b-1", "p-x", "")
 
 	// Stub resolver via the in-memory titles path.
 	res := &stubTitleResolver{titles: map[string]string{"p-x": "Specs"}}
@@ -284,7 +295,7 @@ func TestGetBlockContentPlainWithResolver(t *testing.T) {
 func TestGetBlockContentWithResolver(t *testing.T) {
 	withNoColor(t)
 
-	block := pageMentionBlock("b-1", "p-y")
+	block := pageMentionBlock("b-1", "p-y", "")
 	res := &stubTitleResolver{titles: map[string]string{"p-y": "Docs"}}
 	got := GetBlockContentWithResolver(context.Background(), block, res)
 	if got != "[Docs]" {
@@ -325,7 +336,7 @@ func TestPlainRichTextWithResolver(t *testing.T) {
 func TestFormatAllBlocksWithResolverDelegate(t *testing.T) {
 	withNoColor(t)
 
-	blocks := []Block{pageMentionBlock("b-1", "p-d")}
+	blocks := []Block{pageMentionBlock("b-1", "p-d", "")}
 	m := newResolverFormatMockServer(t, blocks, map[string]string{"p-d": "Delegated"})
 
 	// Redirect the legacy package-level baseURL so the default client
