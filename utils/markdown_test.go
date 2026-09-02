@@ -259,3 +259,167 @@ func TestCreateSendsMarkdown(t *testing.T) {
 		t.Errorf("markdown = %q, want it forwarded verbatim for Notion to parse", body["markdown"])
 	}
 }
+
+// TestVerifyEdits is the pre-flight that compensates for Notion's batch
+// behaviour: a no-match edit sent ALONE is a loud 400, but the same edit
+// batched with a matching one returns 200 and is silently dropped. Every
+// rule here exists to turn that silence into an error.
+func TestVerifyEdits(t *testing.T) {
+	const page = "alpha line\nbeta line\nalpha line\n"
+	for _, tc := range []struct {
+		name    string
+		edits   []MarkdownEdit
+		wantErr string
+	}{
+		{
+			name:  "unique match passes",
+			edits: []MarkdownEdit{{Old: "beta line", New: "B"}},
+		},
+		{
+			name:  "several unique edits pass",
+			edits: []MarkdownEdit{{Old: "beta line", New: "B"}, {Old: "alpha line\nbeta", New: "X"}},
+		},
+		{
+			name:    "no match is refused rather than silently skipped",
+			edits:   []MarkdownEdit{{Old: "gamma line", New: "G"}},
+			wantErr: "is not in the page",
+		},
+		{
+			name: "a no-match hidden behind a valid edit is still caught",
+			// This is the exact shape Notion answers 200 to.
+			edits: []MarkdownEdit{
+				{Old: "beta line", New: "B"},
+				{Old: "gamma line", New: "G"},
+			},
+			wantErr: "edit 2",
+		},
+		{
+			name:    "ambiguous match names the count",
+			edits:   []MarkdownEdit{{Old: "alpha line", New: "A"}},
+			wantErr: "appears 2 times",
+		},
+		{
+			name:  "ambiguous match is allowed with ReplaceAll",
+			edits: []MarkdownEdit{{Old: "alpha line", New: "A", ReplaceAll: true}},
+		},
+		{
+			name:    "empty search string is refused",
+			edits:   []MarkdownEdit{{Old: "", New: "x"}},
+			wantErr: "empty search string",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := VerifyEdits(page, tc.edits)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Errorf("VerifyEdits = %v, want no error", err)
+			case tc.wantErr != "" && err == nil:
+				t.Errorf("VerifyEdits succeeded, want an error mentioning %q", tc.wantErr)
+			case tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr):
+				t.Errorf("VerifyEdits = %q, want it to mention %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestVerifyEdits_TruncatesLongSearchText keeps a pasted paragraph from
+// burying the rest of the message.
+func TestVerifyEdits_TruncatesLongSearchText(t *testing.T) {
+	err := VerifyEdits("short page", []MarkdownEdit{{Old: strings.Repeat("x", 500), New: "y"}})
+	if err == nil {
+		t.Fatal("VerifyEdits accepted a search string that is not present")
+	}
+	if len(err.Error()) > 200 {
+		t.Errorf("error is %d bytes; a long search string should be truncated:\n%s", len(err.Error()), err)
+	}
+}
+
+// TestUpdateMarkdown_ReadsBeforeWriting proves the pre-flight actually
+// runs and that a bad batch never reaches the API.
+func TestUpdateMarkdown_ReadsBeforeWriting(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"page_markdown","id":"pg1","markdown":"hello world\n","truncated":false,"unknown_block_ids":[]}`)
+	}))
+	defer srv.Close()
+	pc := NewPageClient(NewClient("sk_test", WithBaseURL(srv.URL), WithMaxRetries(0)))
+
+	_, err := pc.UpdateMarkdown(context.Background(), "pg1", []MarkdownEdit{{Old: "not present", New: "x"}})
+	if err == nil {
+		t.Fatal("UpdateMarkdown accepted an edit that cannot match")
+	}
+	for _, p := range paths {
+		if strings.HasPrefix(p, "PATCH") {
+			t.Errorf("sent %s despite the pre-flight failing; Notion would have answered 200 and dropped the edit", p)
+		}
+	}
+	if len(paths) != 1 || !strings.HasPrefix(paths[0], "GET") {
+		t.Errorf("calls = %v, want a single GET for the pre-flight", paths)
+	}
+}
+
+// TestUpdateMarkdown_SendsSnakeCaseReplaceAll pins the spelling. Notion's
+// OWN error message says to set "replaceAllMatches" — and that camelCase
+// key is rejected with a 400. The key the API accepts is snake_case.
+func TestUpdateMarkdown_SendsSnakeCaseReplaceAll(t *testing.T) {
+	var patch map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			buf, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(buf, &patch)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"page_markdown","id":"pg1","markdown":"dup\ndup\n","truncated":false,"unknown_block_ids":[]}`)
+	}))
+	defer srv.Close()
+	pc := NewPageClient(NewClient("sk_test", WithBaseURL(srv.URL), WithMaxRetries(0)))
+
+	if _, err := pc.UpdateMarkdown(context.Background(), "pg1",
+		[]MarkdownEdit{{Old: "dup", New: "D", ReplaceAll: true}}); err != nil {
+		t.Fatalf("UpdateMarkdown: %v", err)
+	}
+	if patch["type"] != "update_content" {
+		t.Fatalf("type = %v, want update_content", patch["type"])
+	}
+	uc, _ := patch["update_content"].(map[string]interface{})
+	list, _ := uc["content_updates"].([]interface{})
+	if len(list) != 1 {
+		t.Fatalf("content_updates = %v, want one entry", uc["content_updates"])
+	}
+	edit, _ := list[0].(map[string]interface{})
+	if edit["replace_all_matches"] != true {
+		t.Errorf("edit = %v, want the snake_case replace_all_matches key (camelCase is a 400)", edit)
+	}
+	if _, camel := edit["replaceAllMatches"]; camel {
+		t.Error("sent replaceAllMatches; that spelling is what Notion's error message suggests and what its API rejects")
+	}
+	for _, key := range []string{"old_str", "new_str"} {
+		if _, ok := edit[key]; !ok {
+			t.Errorf("edit = %v, missing %s", edit, key)
+		}
+	}
+}
+
+// TestUpdateMarkdown_Guards covers the arguments that must not reach the API.
+func TestUpdateMarkdown_Guards(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"page_markdown","id":"pg1","markdown":"x\n"}`)
+	}))
+	defer srv.Close()
+	pc := NewPageClient(NewClient("sk_test", WithBaseURL(srv.URL), WithMaxRetries(0)))
+
+	if _, err := pc.UpdateMarkdown(context.Background(), "", []MarkdownEdit{{Old: "x", New: "y"}}); err == nil {
+		t.Error("accepted an empty id")
+	}
+	if _, err := pc.UpdateMarkdown(context.Background(), "pg1", nil); err == nil {
+		t.Error("accepted an empty edit list")
+	}
+	if calls != 0 {
+		t.Errorf("made %d requests for invalid arguments", calls)
+	}
+}

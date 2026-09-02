@@ -47,8 +47,8 @@ import (
 //
 // Building on the documented shapes would have produced a 400 on every
 // call. Only replace_content and insert_content are wired up here;
-// update_content (surgical search-and-replace) is a distinct feature and
-// is tracked separately.
+// update_content (surgical search-and-replace) is wired up too — see
+// UpdateMarkdown, and the anti-contract it has to compensate for.
 
 // markdownCommand is the discriminated body PATCH /pages/{id}/markdown
 // expects. The type field and the payload key must agree — the endpoint
@@ -57,6 +57,20 @@ type markdownCommand struct {
 	Type           string                 `json:"type"`
 	ReplaceContent map[string]interface{} `json:"replace_content,omitempty"`
 	InsertContent  map[string]interface{} `json:"insert_content,omitempty"`
+	UpdateContent  map[string]interface{} `json:"update_content,omitempty"`
+}
+
+// MarkdownEdit is one search-and-replace against a page's markdown.
+//
+// ReplaceAll maps to the per-update `replace_all_matches` key. Note the
+// spelling: when Notion rejects an ambiguous edit its own error says "Set
+// replaceAllMatches to true" — and that camelCase spelling is a 400. The
+// key the API actually accepts is snake_case, confirmed live. Following
+// the error message's advice does not work.
+type MarkdownEdit struct {
+	Old        string `json:"old_str"`
+	New        string `json:"new_str"`
+	ReplaceAll bool   `json:"replace_all_matches,omitempty"`
 }
 
 // ReplaceMarkdown replaces a page's entire body with the given markdown
@@ -160,4 +174,85 @@ func SplitLeadingHeading(md string) (heading, rest string, found bool) {
 		return "", md, false
 	}
 	return heading, strings.TrimLeft(remainder, "\r\n"), true
+}
+
+// UpdateMarkdown applies search-and-replace edits to a page's markdown.
+//
+// It reads the page before writing, to check every edit will match. That
+// pre-flight exists because of an anti-contract confirmed live against
+// 2026-03-11:
+//
+//	ONE edit whose old_str matches nothing  → HTTP 400, "No matches found"
+//	the SAME edit batched with a valid one  → HTTP 200, silently dropped
+//
+// Order makes no difference; the unmatched edit simply does not happen and
+// nothing says so. A script applying five edits where three no longer
+// match gets a 200 and believes all five landed. That is the failure mode
+// this CLI exists to prevent, so the check is not optional.
+//
+// The pre-flight also improves the ambiguous case. Notion rejects an
+// old_str with several matches and tells the caller to "Set
+// replaceAllMatches to true" — a camelCase spelling the API rejects.
+// Checking locally means the error names the edit, the number of matches
+// and the flag that actually works.
+//
+// There is a window between the read and the write in which the page can
+// change, so this narrows the failure rather than closing it. A batch
+// whose edits stop matching in that window is still silently dropped by
+// Notion; nothing short of an API fix can catch that.
+func (p *PageClient) UpdateMarkdown(ctx context.Context, id string, edits []MarkdownEdit) (*PageMarkdown, error) {
+	if err := p.checkAuth(); err != nil {
+		return nil, fmt.Errorf("update page markdown: %w", err)
+	}
+	if id == "" {
+		return nil, fmt.Errorf("update page markdown: id is required")
+	}
+	if len(edits) == 0 {
+		return nil, fmt.Errorf("update page markdown: no edits given")
+	}
+	current, err := p.GetMarkdown(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("update page markdown: read current content: %w", err)
+	}
+	if err := VerifyEdits(current.Markdown, edits); err != nil {
+		return nil, fmt.Errorf("update page markdown: %w", err)
+	}
+	// The edits go on the wire as-is; the struct tags carry the snake_case
+	// names the endpoint wants.
+	return p.patchMarkdown(ctx, id, "update page markdown", markdownCommand{
+		Type:          "update_content",
+		UpdateContent: map[string]interface{}{"content_updates": edits},
+	})
+}
+
+// VerifyEdits reports the first edit that would not apply cleanly to md.
+//
+// Split out as a pure function so the rules are testable without a network
+// round-trip, and so a caller can check a batch before spending a request.
+func VerifyEdits(md string, edits []MarkdownEdit) error {
+	for i, edit := range edits {
+		if edit.Old == "" {
+			return fmt.Errorf("edit %d has an empty search string", i+1)
+		}
+		switch n := strings.Count(md, edit.Old); {
+		case n == 0:
+			return fmt.Errorf("edit %d: %q is not in the page, so it would be skipped without an error",
+				i+1, truncateForError(edit.Old))
+		case n > 1 && !edit.ReplaceAll:
+			return fmt.Errorf("edit %d: %q appears %d times; pass --replace-all to change every occurrence, or make the search text unique",
+				i+1, truncateForError(edit.Old), n)
+		}
+	}
+	return nil
+}
+
+// truncateForError keeps a long search string from burying the rest of an
+// error message.
+func truncateForError(s string) string {
+	const max = 60
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }

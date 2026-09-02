@@ -251,3 +251,138 @@ func TestReplaceMarkdown_JSONMode(t *testing.T) {
 		t.Errorf("object = %v, want page_markdown", got["object"])
 	}
 }
+
+// --- edit-markdown (#131) ---------------------------------------------------
+
+// TestCollectMarkdownEdits covers the two input forms and their merge.
+func TestCollectMarkdownEdits(t *testing.T) {
+	t.Run("replace pairs split on the first equals", func(t *testing.T) {
+		// The replacement may contain '=' — only the FIRST one separates.
+		edits, err := collectMarkdownEdits([]string{"old=new=with=equals"}, "", false)
+		if err != nil {
+			t.Fatalf("collectMarkdownEdits: %v", err)
+		}
+		if len(edits) != 1 || edits[0].Old != "old" || edits[0].New != "new=with=equals" {
+			t.Errorf("edits = %+v, want old/new=with=equals", edits)
+		}
+	})
+
+	t.Run("a pair with no equals is rejected", func(t *testing.T) {
+		_, err := collectMarkdownEdits([]string{"just some text"}, "", false)
+		if err == nil {
+			t.Fatal("accepted a --replace with no '='")
+		}
+		if !strings.Contains(err.Error(), "--edits") {
+			t.Errorf("error = %q, want it to point at the file form for awkward text", err)
+		}
+	})
+
+	t.Run("empty search string is rejected", func(t *testing.T) {
+		if _, err := collectMarkdownEdits([]string{"=replacement"}, "", false); err == nil {
+			t.Fatal("accepted an empty search string")
+		}
+	})
+
+	t.Run("no edits at all is rejected", func(t *testing.T) {
+		_, err := collectMarkdownEdits(nil, "", false)
+		if err == nil {
+			t.Fatal("accepted an invocation with no edits")
+		}
+		if !strings.Contains(err.Error(), "--replace") {
+			t.Errorf("error = %q, want it to name the flags", err)
+		}
+	})
+
+	t.Run("file form carries replace_all_matches per entry", func(t *testing.T) {
+		path := writeMD(t, `[{"old_str":"a","new_str":"A","replace_all_matches":true},{"old_str":"b","new_str":"B"}]`)
+		edits, err := collectMarkdownEdits(nil, path, false)
+		if err != nil {
+			t.Fatalf("collectMarkdownEdits: %v", err)
+		}
+		if len(edits) != 2 {
+			t.Fatalf("edits = %+v, want 2", edits)
+		}
+		if !edits[0].ReplaceAll || edits[1].ReplaceAll {
+			t.Errorf("edits = %+v, want replace_all only on the first", edits)
+		}
+	})
+
+	t.Run("file is the base and flags append", func(t *testing.T) {
+		path := writeMD(t, `[{"old_str":"a","new_str":"A"}]`)
+		edits, err := collectMarkdownEdits([]string{"b=B"}, path, false)
+		if err != nil {
+			t.Fatalf("collectMarkdownEdits: %v", err)
+		}
+		if len(edits) != 2 || edits[0].Old != "a" || edits[1].Old != "b" {
+			t.Errorf("edits = %+v, want the file first then the flag", edits)
+		}
+	})
+
+	t.Run("--replace-all applies to every edit", func(t *testing.T) {
+		edits, err := collectMarkdownEdits([]string{"a=A", "b=B"}, "", true)
+		if err != nil {
+			t.Fatalf("collectMarkdownEdits: %v", err)
+		}
+		for i, e := range edits {
+			if !e.ReplaceAll {
+				t.Errorf("edit %d did not get ReplaceAll", i)
+			}
+		}
+	})
+
+	t.Run("malformed and empty files are rejected", func(t *testing.T) {
+		for _, tc := range []struct{ name, body, want string }{
+			{"malformed", "{not json}", "parse"},
+			{"empty", "   \n", "is empty"},
+			{"empty array", "[]", "contains no edits"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				_, err := collectMarkdownEdits(nil, writeMD(t, tc.body), false)
+				if err == nil {
+					t.Fatalf("accepted a %s edits file", tc.name)
+				}
+				if !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("error = %q, want it to mention %q", err, tc.want)
+				}
+			})
+		}
+	})
+}
+
+// TestEditMarkdown_Dispatch drives the command end to end and checks the
+// pre-flight GET happens before the PATCH.
+func TestEditMarkdown_Dispatch(t *testing.T) {
+	d, out, _, err := runPages(t, "edit-markdown", "pg1", "--replace", "by notion=by me")
+	if err != nil {
+		t.Fatalf("Execute: %v (out=%s)", err, out)
+	}
+	if got := d.count("GET /pages/pg1/markdown"); got != 1 {
+		t.Errorf("pre-flight GET count = %d, want 1 (calls=%v)", got, d.calls)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(d.body("PATCH /pages/pg1/markdown"), &body); err != nil {
+		t.Fatalf("decode PATCH body: %v", err)
+	}
+	if body["type"] != "update_content" {
+		t.Errorf("type = %v, want update_content", body["type"])
+	}
+}
+
+// TestEditMarkdown_UnmatchedEditNeverReachesTheAPI is the point of the
+// whole feature. Notion answers 200 and silently drops an unmatched edit
+// when it is batched with a matching one, so the command must refuse
+// before writing rather than report a success that did not happen.
+func TestEditMarkdown_UnmatchedEditNeverReachesTheAPI(t *testing.T) {
+	d, out, _, err := runPages(t, "edit-markdown", "pg1",
+		"--replace", "by notion=by me",
+		"--replace", "TEXT THAT IS NOT ON THE PAGE=x")
+	if err == nil {
+		t.Fatalf("Execute accepted an edit that cannot match (out=%s)", out)
+	}
+	if !strings.Contains(err.Error(), "is not in the page") {
+		t.Errorf("error = %q, want it to say the search text is absent", err)
+	}
+	if got := d.count("PATCH /pages/pg1/markdown"); got != 0 {
+		t.Errorf("wrote to the page %d times despite a bad edit; the valid half would have applied and the rest dropped silently", got)
+	}
+}

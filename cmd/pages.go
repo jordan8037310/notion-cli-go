@@ -37,6 +37,9 @@ var (
 	pagesAppendMDFrom       string
 	pagesAppendMDPrepend    bool
 	pagesReplaceMDFrom      string
+	pagesEditMDReplace      []string
+	pagesEditMDFile         string
+	pagesEditMDAll          bool
 	pagesCreateManyOnErr    string
 	pagesUpdateProps2       string
 	pagesUpdateTitle        string
@@ -492,6 +495,99 @@ Use 'pages append-markdown' to add to a page instead.`,
 		}
 		return emitMarkdownResult(cmd, out, "Replaced body of page %s")
 	},
+}
+
+// pagesEditMarkdownCmd applies search-and-replace edits to a page body.
+var pagesEditMarkdownCmd = &cobra.Command{
+	Use:   "edit-markdown <id>",
+	Short: "Apply search-and-replace edits to a page's markdown",
+	Long: `Edit part of a page without rewriting the whole thing.
+
+  notioncli pages edit-markdown <id> --replace "old text=new text"
+
+--replace is repeatable and splits on the FIRST '=', so the replacement
+may contain '='. For search text that spans lines or contains '=' itself,
+use --edits FILE, a JSON array:
+
+  [{"old_str": "...", "new_str": "...", "replace_all_matches": true}]
+
+Search text must match exactly once. If it appears several times the edit
+is refused, naming the count — pass --replace-all to change every
+occurrence instead, or make the search text unique.
+
+Every edit is checked against the current page before anything is written,
+and one that would not apply fails the whole command. Notion returns 200
+and silently drops an unmatched edit when it is batched with a matching
+one, so without this check a script could believe edits landed that never
+did.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		edits, err := collectMarkdownEdits(pagesEditMDReplace, pagesEditMDFile, pagesEditMDAll)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("edit markdown: %w", err))
+		}
+		pc, err := newPageClient()
+		if err != nil {
+			return jsonErrorOr(cmd, err)
+		}
+		out, err := pc.UpdateMarkdown(cmd.Context(), args[0], edits)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("edit markdown: %w", err))
+		}
+		return emitMarkdownResult(cmd, out, fmt.Sprintf("Applied %d edit(s) to page %%s", len(edits)))
+	},
+}
+
+// collectMarkdownEdits merges the two ways of specifying edits.
+//
+// --edits is read first and --replace appended, so a file can carry the
+// bulk of a change set while a flag varies one entry per invocation — the
+// same precedence --properties-json and --property already use.
+func collectMarkdownEdits(pairs []string, path string, replaceAll bool) ([]utils.MarkdownEdit, error) {
+	var edits []utils.MarkdownEdit
+
+	if path != "" {
+		buf, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		if len(bytes.TrimSpace(buf)) == 0 {
+			return nil, fmt.Errorf("%s is empty", path)
+		}
+		if err := json.Unmarshal(buf, &edits); err != nil {
+			return nil, fmt.Errorf("parse %s as a JSON array of edits: %w", path, err)
+		}
+		if len(edits) == 0 {
+			return nil, fmt.Errorf("%s contains no edits", path)
+		}
+	}
+
+	for _, pair := range pairs {
+		// Split on the FIRST '=' so the replacement text may contain one.
+		// Search text containing '=' has to come from --edits; that is
+		// what the file form is for.
+		old, replacement, found := strings.Cut(pair, "=")
+		if !found {
+			return nil, fmt.Errorf("--replace %q is not OLD=NEW; use --edits FILE when the text contains '='", pair)
+		}
+		if old == "" {
+			return nil, fmt.Errorf("--replace %q has an empty search string", pair)
+		}
+		edits = append(edits, utils.MarkdownEdit{Old: old, New: replacement})
+	}
+
+	if len(edits) == 0 {
+		return nil, fmt.Errorf("no edits given: pass --replace OLD=NEW or --edits FILE")
+	}
+	if replaceAll {
+		// A single global switch rather than a per-entry one on the flag
+		// form: --replace has nowhere to carry it, and a file entry can
+		// already set replace_all_matches itself.
+		for i := range edits {
+			edits[i].ReplaceAll = true
+		}
+	}
+	return edits, nil
 }
 
 // emitMarkdownResult reports what Notion made of the markdown it was
@@ -983,6 +1079,7 @@ func init() {
 	pagesCmd.AddCommand(pagesCreateManyCmd)
 	pagesCmd.AddCommand(pagesAppendMarkdownCmd)
 	pagesCmd.AddCommand(pagesReplaceMarkdownCmd)
+	pagesCmd.AddCommand(pagesEditMarkdownCmd)
 	pagesCmd.AddCommand(pagesUpdateCmd)
 	pagesCmd.AddCommand(pagesArchiveCmd)
 	pagesCmd.AddCommand(pagesUnarchiveCmd)
@@ -1000,6 +1097,13 @@ func init() {
 	pagesAppendMarkdownCmd.Flags().StringVar(&pagesAppendMDFrom, "from", "", "Path to the markdown file to append (required)")
 	pagesAppendMarkdownCmd.Flags().BoolVar(&pagesAppendMDPrepend, "prepend", false, "Insert at the top of the page instead of the bottom")
 	pagesReplaceMarkdownCmd.Flags().StringVar(&pagesReplaceMDFrom, "from", "", "Path to the markdown file to replace the page body with (required)")
+
+	pagesEditMarkdownCmd.Flags().StringArrayVar(&pagesEditMDReplace, "replace", nil,
+		"Search-and-replace as OLD=NEW, split on the first '=' (repeatable)")
+	pagesEditMarkdownCmd.Flags().StringVar(&pagesEditMDFile, "edits", "",
+		"Path to a JSON array of {old_str,new_str,replace_all_matches} edits")
+	pagesEditMarkdownCmd.Flags().BoolVar(&pagesEditMDAll, "replace-all", false,
+		"Replace every occurrence when the search text is not unique")
 
 	pagesCreateManyCmd.Flags().StringVar(&pagesCreateManyFrom, "from", "", "Path to a JSON array or JSONL file of page specs (required)")
 	pagesCreateManyCmd.Flags().StringVar(&pagesCreateManyOnErr, "on-error", "abort", "What to do when an entry fails: abort|continue")

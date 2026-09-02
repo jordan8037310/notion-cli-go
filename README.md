@@ -159,6 +159,15 @@ with a presigned URL — which expires, so the block is re-read on every run.
   notioncli pages export <id> --format md --out ./backup
   ```
 
+- `pages edit-markdown <id> --replace "OLD=NEW"`: Change part of a page without
+  rewriting it. `--replace` is repeatable and splits on the first `=`; use
+  `--edits FILE` (a JSON array of `{old_str,new_str,replace_all_matches}`) when
+  the search text spans lines or contains `=`. Search text must match exactly
+  once, or `--replace-all` changes every occurrence. Every edit is checked
+  against the current page before anything is written: Notion returns 200 and
+  silently drops an unmatched edit when it is batched with a matching one, so
+  without the check a script could believe edits landed that never did.
+
 - `pages append-markdown <id> --from FILE` / `pages replace-markdown <id> --from
   FILE`: Write markdown into an existing page. Notion parses it server-side, so
   headings, lists, to-dos, code fences with their language, quotes, dividers and
