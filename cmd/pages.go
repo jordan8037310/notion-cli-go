@@ -33,6 +33,10 @@ var (
 	pagesCreateManyFrom     string
 	pagesCreateManyParent   string
 	pagesCreateManyParentDB string
+	pagesCreateFromMD       string
+	pagesAppendMDFrom       string
+	pagesAppendMDPrepend    bool
+	pagesReplaceMDFrom      string
 	pagesCreateManyOnErr    string
 	pagesUpdateProps2       string
 	pagesUpdateTitle        string
@@ -299,11 +303,12 @@ literal text (see issue #45).`,
 		if err != nil {
 			return jsonErrorOr(cmd, err)
 		}
-		// --children-json and --from-text both fill the same body slot,
-		// so taking one silently would discard the other's file.
-		if pagesCreateChildren != "" && pagesCreateFromText != "" {
+		// --children-json, --from-text and --from-markdown all fill the
+		// same body slot, so taking one silently would discard another's
+		// file.
+		if n := countSet(pagesCreateChildren, pagesCreateFromText, pagesCreateFromMD); n > 1 {
 			return jsonErrorOr(cmd, fmt.Errorf(
-				"create page: --children-json and --from-text both set the page body; pass only one"))
+				"create page: --children-json, --from-text and --from-markdown all set the page body; pass only one"))
 		}
 		props, err := readPagePropertiesFile(pagesCreateProps)
 		if err != nil {
@@ -318,16 +323,34 @@ literal text (see issue #45).`,
 				return jsonErrorOr(cmd, fmt.Errorf("create page: %w", err))
 			}
 		}
+		markdown, mdTitle, err := readMarkdownFile(pagesCreateFromMD)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("create page: %w", err))
+		}
+		title := pagesCreateTitle
+		if mdTitle != "" {
+			// Notion drops a leading H1 on create without using it as the
+			// title (see utils.SplitLeadingHeading). Promote it when the
+			// caller gave no --title; warn, rather than guess, when they
+			// did — silently discarding either one would be worse.
+			if title == "" {
+				title = mdTitle
+			} else {
+				errorLine(cmd, "warning: %s opens with %q, which Notion drops on create; --title %q wins",
+					pagesCreateFromMD, "# "+mdTitle, title)
+			}
+		}
 
 		pc, err := newPageClient()
 		if err != nil {
 			return jsonErrorOr(cmd, err)
 		}
-		page, err := pc.Create(context.Background(), utils.CreatePageRequest{
+		page, err := pc.Create(cmd.Context(), utils.CreatePageRequest{
 			Parent:     parent,
-			Title:      pagesCreateTitle,
+			Title:      title,
 			Properties: props,
 			Children:   children,
+			Markdown:   markdown,
 		})
 		if err != nil {
 			return jsonErrorOr(cmd, fmt.Errorf("create page: %w", err))
@@ -400,6 +423,152 @@ it, so a script can reuse one template and vary a field per invocation.`,
 		printPage(cmd.OutOrStdout(), page)
 		return nil
 	},
+}
+
+// pagesAppendMarkdownCmd adds markdown to a page without disturbing what
+// is already on it.
+//
+// Body edits live on their own commands rather than as flags on `pages
+// update` for two reasons: they hit a different endpoint
+// (PATCH /pages/{id}/markdown, not PATCH /pages/{id}), so folding them in
+// would make one command issue two calls with a partial-failure story;
+// and the replacing form is destructive, which belongs in the command
+// name where it cannot be missed.
+var pagesAppendMarkdownCmd = &cobra.Command{
+	Use:   "append-markdown <id>",
+	Short: "Append a markdown file to a page's body",
+	Long: `Append markdown to a page.
+
+The markdown is parsed by Notion, not by this CLI, so the full dialect it
+supports lands as real blocks — headings, lists, to-dos, code fences with
+their language, quotes, dividers and inline emphasis.
+
+--prepend inserts at the top of the page instead of the bottom. Nothing
+already on the page is removed either way; see 'pages replace-markdown'
+for that.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		md, err := readMarkdownBody(pagesAppendMDFrom)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("append markdown: %w", err))
+		}
+		pc, err := newPageClient()
+		if err != nil {
+			return jsonErrorOr(cmd, err)
+		}
+		out, err := pc.AppendMarkdown(cmd.Context(), args[0], md, pagesAppendMDPrepend)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("append markdown: %w", err))
+		}
+		return emitMarkdownResult(cmd, out, "Appended markdown to page %s")
+	},
+}
+
+// pagesReplaceMarkdownCmd replaces a page's whole body.
+var pagesReplaceMarkdownCmd = &cobra.Command{
+	Use:   "replace-markdown <id>",
+	Short: "Replace a page's entire body with a markdown file",
+	Long: `Replace everything on a page with the contents of a markdown file.
+
+This is destructive: every block currently on the page is removed. Child
+pages and child databases are NOT deleted — Notion gates those behind a
+separate flag this command deliberately does not send, so losing a
+sub-page can never be a side effect of editing text.
+
+Use 'pages append-markdown' to add to a page instead.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		md, err := readMarkdownBody(pagesReplaceMDFrom)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("replace markdown: %w", err))
+		}
+		pc, err := newPageClient()
+		if err != nil {
+			return jsonErrorOr(cmd, err)
+		}
+		out, err := pc.ReplaceMarkdown(cmd.Context(), args[0], md)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("replace markdown: %w", err))
+		}
+		return emitMarkdownResult(cmd, out, "Replaced body of page %s")
+	},
+}
+
+// emitMarkdownResult reports what Notion made of the markdown it was
+// sent. Both write endpoints echo the re-rendered page back, so the
+// human path prints the same truncation and unknown-block warnings the
+// read path does rather than a bare success line.
+func emitMarkdownResult(cmd *cobra.Command, out *utils.PageMarkdown, format string) error {
+	if globalJSON {
+		return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), out))
+	}
+	color.Green(format, out.ID)
+	if out.Truncated {
+		errorLine(cmd, "warning: Notion truncated the rendered page")
+	}
+	if len(out.UnknownBlockIDs) > 0 {
+		errorLine(cmd, "warning: %d block(s) could not be rendered as markdown: %s",
+			len(out.UnknownBlockIDs), strings.Join(out.UnknownBlockIDs, ", "))
+	}
+	fmt.Fprint(cmd.OutOrStdout(), out.Markdown)
+	if !strings.HasSuffix(out.Markdown, "\n") {
+		fmt.Fprintln(cmd.OutOrStdout())
+	}
+	return nil
+}
+
+// readMarkdownBody reads a markdown file for the body-editing commands.
+// Unlike create, no leading-H1 promotion happens here: the page already
+// has a title, and silently hoisting a heading out of the body would be
+// an edit the caller did not ask for.
+func readMarkdownBody(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("--from is required")
+	}
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	if strings.TrimSpace(string(buf)) == "" {
+		return "", fmt.Errorf("%s is empty", path)
+	}
+	return string(buf), nil
+}
+
+// readMarkdownFile reads a --from-markdown file for `pages create` and
+// splits off a leading H1 for the caller to promote to the page title.
+//
+// See utils.SplitLeadingHeading: Notion silently drops a leading H1 on
+// create and does not use it as the title either, so forwarding a normal
+// markdown file verbatim loses its most important line.
+func readMarkdownFile(path string) (body, title string, err error) {
+	if path == "" {
+		return "", "", nil
+	}
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", fmt.Errorf("read %s: %w", path, err)
+	}
+	if strings.TrimSpace(string(buf)) == "" {
+		return "", "", fmt.Errorf("%s is empty; omit --from-markdown instead of passing an empty file", path)
+	}
+	heading, rest, found := utils.SplitLeadingHeading(string(buf))
+	if !found {
+		return string(buf), "", nil
+	}
+	return rest, heading, nil
+}
+
+// countSet returns how many of the given flag values are non-empty. Used
+// to reject mutually exclusive body sources.
+func countSet(values ...string) int {
+	n := 0
+	for _, v := range values {
+		if v != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // pagesArchiveCmd archives a page.
@@ -812,6 +981,8 @@ func init() {
 	pagesCmd.AddCommand(pagesMarkdownCmd)
 	pagesCmd.AddCommand(pagesCreateCmd)
 	pagesCmd.AddCommand(pagesCreateManyCmd)
+	pagesCmd.AddCommand(pagesAppendMarkdownCmd)
+	pagesCmd.AddCommand(pagesReplaceMarkdownCmd)
 	pagesCmd.AddCommand(pagesUpdateCmd)
 	pagesCmd.AddCommand(pagesArchiveCmd)
 	pagesCmd.AddCommand(pagesUnarchiveCmd)
@@ -823,7 +994,12 @@ func init() {
 	pagesCreateCmd.Flags().StringVar(&pagesCreateProps, "properties-json", "", "Path to a JSON object of Notion property values, passed through verbatim")
 	pagesCreateCmd.Flags().StringVar(&pagesCreateChildren, "children-json", "", "Path to a JSON array of blocks for the page body")
 	pagesCreateCmd.Flags().StringVar(&pagesCreateFromText, "from-text", "", "Path to a text file; each non-empty line becomes a paragraph block (not a markdown parser — see #45)")
+	pagesCreateCmd.Flags().StringVar(&pagesCreateFromMD, "from-markdown", "", "Path to a markdown file; parsed by Notion into real blocks. A leading '# Heading' becomes the page title")
 	pagesCreateCmd.Flags().StringVar(&pagesCreateTitle, "title", "", "Title for the new page")
+
+	pagesAppendMarkdownCmd.Flags().StringVar(&pagesAppendMDFrom, "from", "", "Path to the markdown file to append (required)")
+	pagesAppendMarkdownCmd.Flags().BoolVar(&pagesAppendMDPrepend, "prepend", false, "Insert at the top of the page instead of the bottom")
+	pagesReplaceMarkdownCmd.Flags().StringVar(&pagesReplaceMDFrom, "from", "", "Path to the markdown file to replace the page body with (required)")
 
 	pagesCreateManyCmd.Flags().StringVar(&pagesCreateManyFrom, "from", "", "Path to a JSON array or JSONL file of page specs (required)")
 	pagesCreateManyCmd.Flags().StringVar(&pagesCreateManyOnErr, "on-error", "abort", "What to do when an entry fails: abort|continue")

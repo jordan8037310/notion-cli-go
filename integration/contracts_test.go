@@ -248,6 +248,116 @@ func TestContract_BlockChildrenAppendCapIs100(t *testing.T) {
 	}
 }
 
+// TestContract_CreateDropsALeadingH1 is the anti-contract behind the
+// leading-heading rule in `pages create --from-markdown` (#45).
+//
+// POST /v1/pages accepts a `markdown` body and parses it server-side. If
+// that markdown opens with a level-1 heading, Notion does NOT create the
+// heading block — and does NOT use it as the page title either. The line
+// is simply gone, with a 200 and no warning. Since nearly every markdown
+// file opens with its title as an H1, forwarding a file verbatim loses
+// its most important line.
+//
+// utils.SplitLeadingHeading exists solely to compensate. If this test
+// starts failing, Notion has fixed the behaviour and the compensation
+// should be removed rather than left to double-handle the heading.
+func TestContract_CreateDropsALeadingH1(t *testing.T) {
+	h := New(t)
+	status, body := h.API(http.MethodPost, "/pages", map[string]interface{}{
+		"parent":     map[string]interface{}{"type": "page_id", "page_id": h.PageID},
+		"properties": map[string]interface{}{},
+		"markdown":   "# Should Survive\n\nbody text\n",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("CONTRACT MOVED: POST /pages rejected a `markdown` body (HTTP %d): %v", status, body)
+	}
+	id, _ := body["id"].(string)
+	h.Archive("page", id)
+
+	title := ""
+	if props, ok := body["properties"].(map[string]interface{}); ok {
+		for _, raw := range props {
+			prop, ok := raw.(map[string]interface{})
+			if !ok || prop["type"] != "title" {
+				continue
+			}
+			for _, item := range prop["title"].([]interface{}) {
+				if m, ok := item.(map[string]interface{}); ok {
+					if s, ok := m["plain_text"].(string); ok {
+						title += s
+					}
+				}
+			}
+		}
+	}
+	if title == "Should Survive" {
+		t.Errorf("ANTI-CONTRACT MOVED: Notion now promotes a leading H1 to the page title.\n" +
+			"utils.SplitLeadingHeading now double-handles it — drop the compensation.")
+	}
+
+	_, kids := h.API(http.MethodGet, "/blocks/"+id+"/children?page_size=10", nil)
+	results, _ := kids["results"].([]interface{})
+	for _, raw := range results {
+		block, _ := raw.(map[string]interface{})
+		if block["type"] == "heading_1" {
+			t.Errorf("ANTI-CONTRACT MOVED: a leading H1 now survives as a heading_1 block.\n" +
+				"utils.SplitLeadingHeading strips it before sending — remove the compensation.")
+			return
+		}
+	}
+	if len(results) == 0 {
+		t.Errorf("CONTRACT MOVED: markdown body produced no blocks at all: %v", kids)
+	}
+}
+
+// TestContract_MarkdownWriteCommandsAreDiscriminated pins the PATCH shape
+// that developers.notion.com currently documents WRONG. The reference page
+// describes flat keys (`replace_content` a string, `update_content` an
+// array); live, the endpoint dispatches on a `type` field and each payload
+// is an object. Building on the documented shape 400s on every call.
+func TestContract_MarkdownWriteCommandsAreDiscriminated(t *testing.T) {
+	h := New(t)
+	status, body := h.API(http.MethodPost, "/pages", map[string]interface{}{
+		"parent":     map[string]interface{}{"type": "page_id", "page_id": h.PageID},
+		"properties": map[string]interface{}{},
+		"markdown":   "original body\n",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("could not create the fixture page (HTTP %d): %v", status, body)
+	}
+	id, _ := body["id"].(string)
+	h.Archive("page", id)
+
+	// The documented-but-wrong flat string form must still be rejected. If
+	// it starts succeeding, the docs caught up and both shapes work.
+	flat, _ := h.API(http.MethodPatch, "/pages/"+id+"/markdown",
+		map[string]interface{}{"replace_content": "flat form\n"})
+	if flat == http.StatusOK {
+		t.Errorf("CONTRACT MOVED: the flat `replace_content` string form now works.\n" +
+			"The discriminated command in utils/markdown.go is no longer the only option.")
+	}
+
+	for _, tc := range []struct {
+		name string
+		body map[string]interface{}
+	}{
+		{"replace_content", map[string]interface{}{
+			"type": "replace_content", "replace_content": map[string]interface{}{"new_str": "replaced\n"}}},
+		{"insert_content", map[string]interface{}{
+			"type": "insert_content", "insert_content": map[string]interface{}{
+				"content": "appended\n", "position": map[string]interface{}{"type": "end"}}}},
+	} {
+		st, resp := h.API(http.MethodPatch, "/pages/"+id+"/markdown", tc.body)
+		if st != http.StatusOK {
+			t.Errorf("CONTRACT MOVED: %s command rejected (HTTP %d): %v", tc.name, st, resp)
+			continue
+		}
+		if _, ok := resp["markdown"]; !ok {
+			t.Errorf("CONTRACT MOVED: %s response no longer carries `markdown`; got %v", tc.name, keysOf(resp))
+		}
+	}
+}
+
 // --- helpers ---------------------------------------------------------------
 
 // newDatabase provisions a database under the run page using the shape the
