@@ -494,7 +494,7 @@ func TestBlocksDelete_APIErrorExitsNonZero(t *testing.T) {
 		// fails. The default mock would 200 on the listing, so we
 		// short-circuit here.
 		if r.Method == http.MethodGet || r.Method == http.MethodDelete {
-			http.Error(w, `{"object":"error","status":500,"code":"server_error"}`, http.StatusInternalServerError)
+			http.Error(w, `{"object":"error","status":403,"code":"restricted_resource"}`, http.StatusForbidden)
 			return
 		}
 		origHandler.ServeHTTP(w, r)

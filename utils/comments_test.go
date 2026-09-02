@@ -138,7 +138,10 @@ func newCommentsMock(t *testing.T) *commentsMock {
 // does not touch the package-level baseURL, so it is safe to run in
 // parallel with other utils tests that do.
 func newCommentClientForTest(srvURL string) *CommentClient {
-	return NewCommentClient(NewClient("fake-key", WithBaseURL(srvURL)))
+	// Retries off: these tests assert that an error SURFACES, not that it
+	// is retried, and the default policy would make each of them pay four
+	// real backoffs.
+	return NewCommentClient(NewClient("fake-key", WithBaseURL(srvURL), WithMaxRetries(0)))
 }
 
 // TestList is the gap-gate anchor for (*CommentClient).List; the detailed

@@ -46,6 +46,7 @@ type Client struct {
 	apiKey     string
 	apiVersion string
 	httpClient *http.Client
+	retry      retryPolicy
 }
 
 // Option mutates a Client during construction. Pass Options into NewClient
@@ -101,6 +102,7 @@ func NewClient(apiKey string, opts ...Option) *Client {
 		apiKey:     apiKey,
 		apiVersion: NotionAPIVersion,
 		httpClient: &http.Client{Timeout: DefaultTimeout},
+		retry:      defaultRetryPolicy(),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -162,11 +164,61 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body inter
 // (retries, rate limiting, structured logging) so individual resource
 // clients do not each need to grow their own middleware stack.
 func (c *Client) do(req *http.Request) (*http.Response, error) {
-	resp, err := c.httpClient.Do(req)
+	ctx := req.Context()
+	var lastResp *http.Response
+	var lastErr error
+
+	for attempt := 0; attempt < c.retry.maxAttempts; attempt++ {
+		// Rebuild the body on every attempt after the first. A request
+		// body is a one-shot reader, so replaying without this sends an
+		// empty body and turns a transient 502 into a confusing 400.
+		attemptReq := req
+		if attempt > 0 {
+			var err error
+			attemptReq, err = replayable(req)
+			if err != nil {
+				return lastResp, lastErr
+			}
+		}
+
+		resp, err := c.httpClient.Do(attemptReq)
+		if !shouldRetry(req.Method, resp, err) {
+			return resp, err
+		}
+		lastResp, lastErr = resp, err
+
+		// Last attempt: hand back whatever we got rather than a
+		// synthesised "gave up" error, so the caller sees the real
+		// status and request_id.
+		if attempt == c.retry.maxAttempts-1 {
+			return resp, err
+		}
+
+		delay := retryDelay(c.retry, attempt, resp)
+		drain(resp)
+		if err := c.retry.sleep(ctx, delay); err != nil {
+			// Context cancelled mid-backoff: report that, not the
+			// status we were about to retry past.
+			return nil, err
+		}
+	}
+	return lastResp, lastErr
+}
+
+// replayable returns a copy of req with a fresh body. Requests built by
+// newRequest carry GetBody (net/http sets it for *bytes.Buffer), so this
+// succeeds; a caller-constructed body-less request needs no replay.
+func replayable(req *http.Request) (*http.Request, error) {
+	clone := req.Clone(req.Context())
+	if req.Body == nil || req.GetBody == nil {
+		return clone, nil
+	}
+	body, err := req.GetBody()
 	if err != nil {
 		return nil, err
 	}
-	return resp, nil
+	clone.Body = body
+	return clone, nil
 }
 
 // decodeInto reads resp.Body and unmarshals it into target. It always closes

@@ -296,7 +296,12 @@ func TestFetch_JSONOutput(t *testing.T) {
 // circuits the dispatcher (no fall-through, error returned to caller).
 func TestFetch_PageProbeNon404Surfaces(t *testing.T) {
 	m := withFetchEnv(t)
-	m.pageErr = http.StatusInternalServerError
+	// 403 rather than 500: both are non-404 so the branch under test is
+	// identical, but 5xx on a GET is now retried four times with real
+	// backoff (#43) and 403 is a more realistic Notion failure anyway.
+	// Retry-then-exhaust is covered at the client level by
+	// TestRetry_ExhaustionReturnsTheRealResponse.
+	m.pageErr = http.StatusForbidden
 	resetRootCmdArgs()
 
 	rootCmd.SilenceUsage = true
