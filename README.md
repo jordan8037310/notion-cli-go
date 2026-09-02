@@ -131,6 +131,20 @@ with a presigned URL — which expires, so the block is re-read on every run.
   a markdown parser. `--from-markdown` is: the file is parsed by Notion into real
   blocks, and a leading `# Heading` becomes the page title (Notion silently drops
   it otherwise).
+- `--watch <interval>`: Re-run a list command every interval until interrupted.
+  Supported on `list`, `blocks list`, `databases query`, `search` and
+  `comments list`; any other command rejects the flag rather than accepting it
+  and never refreshing. On a terminal the screen is redrawn in place; piped, a
+  timestamped separator marks each render — except under `--json`, where the
+  stream stays valid NDJSON so `--json --watch 30s | jq` works. Ctrl-C exits 0.
+  A failing iteration ends the watch: the transport already retries what is
+  worth retrying, so an error that gets this far will not fix itself. Minimum
+  interval is 1s, since Notion rate-limits at a few requests per second.
+
+  ```bash
+  notioncli databases query <id> --watch 30s
+  ```
+
 - `pages export <id>`: Export a page and its sub-pages. `--format json` (the
   default) writes one JSON document holding each page, its blocks and its
   children to stdout; `--format md --out DIR` writes a markdown file per page

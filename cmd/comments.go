@@ -171,7 +171,7 @@ func commentPlainText(c utils.Comment) string {
 
 func init() {
 	rootCmd.AddCommand(commentsCmd)
-	commentsCmd.AddCommand(commentsListCmd)
+	commentsCmd.AddCommand(watchable(commentsListCmd))
 	commentsCmd.AddCommand(commentsCreateCmd)
 
 	commentsCreateCmd.Flags().StringVar(&commentsCreateText, "text", "", "Comment text (required)")

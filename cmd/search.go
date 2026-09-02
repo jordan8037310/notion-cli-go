@@ -316,7 +316,7 @@ func resetSearchFlags() {
 }
 
 func init() {
-	rootCmd.AddCommand(searchCmd)
+	rootCmd.AddCommand(watchable(searchCmd))
 	searchCmd.Flags().StringVar(&searchType, "type", "", "Restrict results to pages|databases")
 	searchCmd.Flags().IntVar(&searchLimit, "limit", 0, "Maximum total results to return (0 = all)")
 	searchCmd.Flags().IntVar(&searchPageSize, "page-size", 0, "Notion API page size (1-100, 0 = server default)")

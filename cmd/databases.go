@@ -351,7 +351,7 @@ func resetDatabasesFlags() {
 func init() {
 	rootCmd.AddCommand(databasesCmd)
 	databasesCmd.AddCommand(databasesGetCmd)
-	databasesCmd.AddCommand(databasesQueryCmd)
+	databasesCmd.AddCommand(watchable(databasesQueryCmd))
 	databasesCmd.AddCommand(databasesDataSourcesCmd)
 	databasesCmd.AddCommand(databasesCreateCmd)
 	databasesCmd.AddCommand(databasesUpdateCmd)
