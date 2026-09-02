@@ -679,3 +679,54 @@ func (b *BlockClient) DeleteBlock(ctx context.Context, pageID string, order int)
 	}
 	return expectStatus(resp, http.StatusOK)
 }
+
+// GetBlockTree walks a page's block hierarchy depth-first, returning every
+// block with its nesting depth.
+//
+// `blocks list` returns TOP-LEVEL blocks only — it never follows
+// HasChildren — so toggles, columns, tables and synced blocks hide
+// everything beneath them, and nothing in the output says so. On a page
+// built with columns or toggles that can be most of the content (#109).
+//
+// maxDepth bounds the walk; <= 0 means unlimited. Notion permits deep
+// nesting and each level is another paginated request, so a bound is worth
+// having.
+func (b *BlockClient) GetBlockTree(ctx context.Context, pageID string, maxDepth int) ([]NestedBlock, error) {
+	return b.walkBlocks(ctx, pageID, 0, maxDepth)
+}
+
+// NestedBlock is a block plus how deep it sits. Depth 0 is a direct child
+// of the page.
+type NestedBlock struct {
+	Block
+	Depth int `json:"depth"`
+}
+
+func (b *BlockClient) walkBlocks(ctx context.Context, parentID string, depth, maxDepth int) ([]NestedBlock, error) {
+	children, err := b.GetAllBlocks(ctx, parentID, "")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]NestedBlock, 0, len(children))
+	for _, child := range children {
+		out = append(out, NestedBlock{Block: child, Depth: depth})
+		if !child.HasChildren {
+			continue
+		}
+		if maxDepth > 0 && depth+1 >= maxDepth {
+			continue
+		}
+		// A child_page is a page in its own right, not nested content.
+		// Descending into it would pull an unrelated document's blocks
+		// into this page's listing.
+		if child.Type == "child_page" || child.Type == "child_database" {
+			continue
+		}
+		nested, err := b.walkBlocks(ctx, child.ID, depth+1, maxDepth)
+		if err != nil {
+			return nil, fmt.Errorf("walk children of %s: %w", child.ID, err)
+		}
+		out = append(out, nested...)
+	}
+	return out, nil
+}

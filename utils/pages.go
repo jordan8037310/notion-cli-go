@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
@@ -894,4 +895,56 @@ func TruncatedProperties(props map[string]interface{}) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// PageMarkdown is the response of GET /v1/pages/{page_id}/markdown.
+//
+// Field names are taken from the live response, NOT from the issue that
+// requested this: the API returns `markdown` and `unknown_block_ids`, while
+// the proposal assumed `page_markdown` and `unknown_blocks`. Building on
+// the assumed names would have decoded to empty strings on every call and
+// looked like an empty page.
+type PageMarkdown struct {
+	Object string `json:"object"`
+	ID     string `json:"id"`
+	// Markdown is the whole page rendered, including nested content that
+	// `blocks list` cannot reach because it never recurses.
+	Markdown string `json:"markdown"`
+	// Truncated reports that Notion cut the output. Surfaced rather than
+	// discarded: a silently shortened page is the same failure shape as
+	// the 25-reference property cap (#104).
+	Truncated bool `json:"truncated"`
+	// UnknownBlockIDs lists blocks Notion could not render as markdown.
+	// Also surfaced — the alternative is a page that quietly omits things.
+	UnknownBlockIDs []string  `json:"unknown_block_ids"`
+	RequestID       string    `json:"request_id,omitempty"`
+	Raw             io.Reader `json:"-"`
+}
+
+// GetMarkdown renders a whole page as markdown.
+//
+// This is the only single call that returns a page's COMPLETE content.
+// `blocks list` returns top-level blocks and never recurses, so toggles,
+// columns, tables and synced blocks hide everything beneath them — and it
+// gives no signal that it did (issue #109).
+func (p *PageClient) GetMarkdown(ctx context.Context, id string) (*PageMarkdown, error) {
+	if err := p.checkAuth(); err != nil {
+		return nil, fmt.Errorf("get page markdown: %w", err)
+	}
+	if id == "" {
+		return nil, fmt.Errorf("get page markdown: id is required")
+	}
+	req, err := p.c.newRequest(ctx, http.MethodGet, "/pages/"+id+"/markdown", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get page markdown: %w", err)
+	}
+	var out PageMarkdown
+	if err := decodeInto(resp, &out); err != nil {
+		return nil, fmt.Errorf("get page markdown: %w", err)
+	}
+	return &out, nil
 }

@@ -5,6 +5,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -29,10 +30,13 @@ var (
 	// blocksListType backs --type on `blocks list`. Separate storage from
 	// blockType by design; see the note above.
 	blocksListType string
-	blockURL       string
-	blockCaption   string
-	blockFileID    string
-	blockLanguage  string
+	// blocksListRecursive backs --recursive on `blocks list`.
+	blocksListRecursive bool
+	blocksListMaxDepth  int
+	blockURL            string
+	blockCaption        string
+	blockFileID         string
+	blockLanguage       string
 	// blocksAddRichTextJSON backs the --rich-text-json flag on
 	// `blocks add`. When non-empty, the command reads the file, parses
 	// it via utils.ParseRichTextJSON, and dispatches through
@@ -92,6 +96,14 @@ var blocksListCmd = &cobra.Command{
 		// In --json mode skip the timezone lookup (it is only needed to
 		// format timestamps for human output) and emit raw Notion block
 		// objects as NDJSON.
+		// --recursive descends into nested blocks. The default listing is
+		// top-level only and gives no sign that it stopped there, so on a
+		// page built with toggles or columns most of the content is
+		// invisible (issue #109).
+		if blocksListRecursive {
+			return runBlocksListRecursive(cmd, notionAPIKey, pageID)
+		}
+
 		if globalJSON {
 			// Emit Notion's own bytes, not a re-marshalled Block. The
 			// typed struct models only the block types the human path
@@ -327,6 +339,59 @@ Examples:
 	},
 }
 
+// runBlocksListRecursive renders the full block tree, indenting by depth.
+//
+// It walks the typed tree rather than the raw-bytes path the flat --json
+// listing uses: nesting depth is information the raw response does not
+// carry, so it has to be attached here.
+func runBlocksListRecursive(cmd *cobra.Command, apiKey, pageID string) error {
+	bc := utils.NewBlockClient(utils.NewClient(apiKey, utils.WithBaseURL(utils.GetBaseURL())))
+	nodes, err := bc.GetBlockTree(context.Background(), pageID, blocksListMaxDepth)
+	if err != nil {
+		return jsonErrorOr(cmd, fmt.Errorf("blocks list: %w", err))
+	}
+	if blocksListType != "" {
+		filtered := nodes[:0]
+		for _, n := range nodes {
+			if n.Type == blocksListType {
+				filtered = append(filtered, n)
+			}
+		}
+		nodes = filtered
+	}
+	if globalJSON {
+		return jsonErrorOr(cmd, emitList(cmd.OutOrStdout(), nodes))
+	}
+
+	w := cmd.OutOrStdout()
+	if len(nodes) == 0 {
+		color.Yellow("No blocks found on this page.")
+		return nil
+	}
+	resolver := buildPageResolver(apiKey)
+	counts := map[string]int{}
+	fmt.Fprintln(w)
+	for i, n := range nodes {
+		counts[n.Type]++
+		icon := utils.SupportedBlockTypes[n.Type].Icon
+		if icon == "" {
+			icon = "?"
+		}
+		content := utils.GetBlockContentWithResolver(context.Background(), n.Block, resolver)
+		fmt.Fprintf(w, "%s%3d %s  [%-18s] %s\n",
+			strings.Repeat("  ", n.Depth), i+1, icon, n.Type, content)
+	}
+	fmt.Fprintln(w)
+
+	summary := make([]string, 0, len(counts))
+	for t, c := range counts {
+		summary = append(summary, fmt.Sprintf("%d %s", c, t))
+	}
+	sort.Strings(summary)
+	color.Cyan("  %d blocks (recursive): %s\n", len(nodes), strings.Join(summary, ", "))
+	return nil
+}
+
 // blocksAddOptions translates the --url / --caption / --file-upload-id /
 // --language cmd-level flags into the utils.BlockOption slice consumed by
 // utils.AddBlock. Kept separate so the flag wiring is easy to extend and
@@ -408,6 +473,8 @@ func init() {
 
 	// Flags for list command
 	blocksListCmd.Flags().StringVarP(&blocksListType, "type", "t", "", "Filter by block type")
+	blocksListCmd.Flags().BoolVar(&blocksListRecursive, "recursive", false, "Descend into nested blocks (toggles, columns, tables) instead of listing top-level blocks only")
+	blocksListCmd.Flags().IntVar(&blocksListMaxDepth, "max-depth", 0, "Levels to return with --recursive: 1 = top level only, 2 = top level plus one, 0 = unlimited")
 
 	// Flags for add command
 	blocksAddCmd.Flags().StringVarP(&blockType, "type", "t", "paragraph", "Block type to add")

@@ -519,10 +519,58 @@ relation or people property completely. Property ids come from
 	},
 }
 
+// pagesMarkdownCmd renders a whole page as markdown.
+//
+// This is the only single command that returns a page's COMPLETE content.
+// `blocks list` returns top-level blocks and never recurses, so toggles,
+// columns and tables hide everything beneath them — and say nothing about
+// it. "Read this Notion page" is the most common thing anyone wants from a
+// Notion CLI and was, until now, not possible in one call (issue #109).
+var pagesMarkdownCmd = &cobra.Command{
+	Use:   "markdown <page-id>",
+	Short: "Render a whole page as markdown, including nested content",
+	Long: `Render a page as markdown via Notion's own renderer.
+
+Unlike ` + "`blocks list`" + `, this includes nested content — toggles,
+columns, tables, synced blocks. Notion reports when it truncated the output
+or could not render particular blocks, and both are surfaced on stderr
+rather than dropped.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		pc, err := newPageClient()
+		if err != nil {
+			return jsonErrorOr(cmd, err)
+		}
+		md, err := pc.GetMarkdown(context.Background(), args[0])
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("pages markdown: %w", err))
+		}
+		if globalJSON {
+			return jsonErrorOr(cmd, emitJSON(cmd.OutOrStdout(), md))
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), md.Markdown)
+
+		// Report incompleteness rather than let the user assume they have
+		// the whole page. Warnings go to stderr so `pages markdown x > out.md`
+		// still produces clean markdown.
+		if md.Truncated {
+			fmt.Fprintln(cmd.ErrOrStderr(),
+				"warning: Notion truncated this page's markdown — the output above is incomplete")
+		}
+		if n := len(md.UnknownBlockIDs); n > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"warning: %d block(s) could not be rendered as markdown and are missing above: %s\n",
+				n, strings.Join(md.UnknownBlockIDs, ", "))
+		}
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(pagesCmd)
 	pagesCmd.AddCommand(pagesGetCmd)
 	pagesCmd.AddCommand(pagesPropertyCmd)
+	pagesCmd.AddCommand(pagesMarkdownCmd)
 	pagesCmd.AddCommand(pagesCreateCmd)
 	pagesCmd.AddCommand(pagesUpdateCmd)
 	pagesCmd.AddCommand(pagesArchiveCmd)
