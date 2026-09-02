@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -473,6 +475,12 @@ func resetPagesFlags() {
 	pagesUpdateProps = nil
 	pagesMoveParent = ""
 	pagesDuplicateParent = ""
+	// Added with #40. cobra keeps parsed values for the life of the
+	// process, so a file path left here would leak into a later test.
+	pagesCreateProps = ""
+	pagesCreateChildren = ""
+	pagesCreateFromText = ""
+	pagesUpdateProps2 = ""
 }
 
 // TestPagesGetDispatch runs `pages get <id>` end-to-end against the mock.
@@ -722,5 +730,171 @@ func TestPagesDuplicateMissingParent(t *testing.T) {
 	}
 	if got := d.count("POST /pages"); got != 0 {
 		t.Errorf("expected no POST /pages when --parent missing, got %d", got)
+	}
+}
+
+// TestPagesCreate_RichPropertiesAndBody guards issue #40. `pages create`
+// took only --parent and --title, so it could not create a row in any
+// database with required non-title properties — which is most real
+// databases. The property system has ~20 shapes, so the flag passes JSON
+// through verbatim rather than growing a flag per type.
+func TestPagesCreate_RichPropertiesAndBody(t *testing.T) {
+	srv := withCmdEnv(t)
+
+	var mu sync.Mutex
+	var body map[string]interface{}
+	orig := srv.Config.Handler
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/pages" {
+			raw, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			_ = json.Unmarshal(raw, &body)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"page","id":"newPage"}`))
+			return
+		}
+		orig.ServeHTTP(w, r)
+	})
+
+	dir := t.TempDir()
+	props := filepath.Join(dir, "props.json")
+	if err := os.WriteFile(props, []byte(`{
+		"Stage":{"select":{"name":"Live"}},
+		"Tags":{"multi_select":[{"name":"a"},{"name":"b"}]},
+		"Done":{"checkbox":true}}`), 0o600); err != nil {
+		t.Fatalf("write props: %v", err)
+	}
+	children := filepath.Join(dir, "children.json")
+	if err := os.WriteFile(children, []byte(
+		`[{"object":"block","type":"paragraph","paragraph":{"rich_text":[{"type":"text","text":{"content":"hi"}}]}}]`), 0o600); err != nil {
+		t.Fatalf("write children: %v", err)
+	}
+
+	resetPagesFlags()
+	pagesCreateParent = "parentPage"
+	pagesCreateProps = props
+	pagesCreateChildren = children
+
+	resetRootCmdArgs()
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&out)
+	rootCmd.SetArgs([]string{"pages", "create", "--parent", "parentPage",
+		"--properties-json", props, "--children-json", children})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("pages create: %v (%s)", err, out.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	sent, _ := body["properties"].(map[string]interface{})
+	for _, key := range []string{"Stage", "Tags", "Done"} {
+		if _, ok := sent[key]; !ok {
+			t.Errorf("property %q was not passed through; body had %v", key, body["properties"])
+		}
+	}
+	// Verbatim: the nested shape must survive untouched.
+	stage, _ := sent["Stage"].(map[string]interface{})
+	sel, _ := stage["select"].(map[string]interface{})
+	if sel["name"] != "Live" {
+		t.Errorf("select value was not passed through verbatim: %v", stage)
+	}
+	kids, _ := body["children"].([]interface{})
+	if len(kids) != 1 {
+		t.Errorf("children = %v, want the one block from the file", body["children"])
+	}
+}
+
+// TestPagesCreate_FromTextIsNotAMarkdownParser. The flag is --from-text,
+// not --from-markdown as issue #40 proposed, because it does not parse
+// markdown: every non-empty line becomes a paragraph verbatim. Naming it
+// "markdown" would promise a fidelity the code lacks and silently flatten
+// the formatting a user wrote (real conversion is #45).
+func TestPagesCreate_FromTextIsNotAMarkdownParser(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "body.txt")
+	if err := os.WriteFile(path, []byte("# Not A Heading\n\n- not a list item\n\nlast\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	blocks, err := blocksFromPlainText(path)
+	if err != nil {
+		t.Fatalf("blocksFromPlainText: %v", err)
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("got %d blocks, want 3 (blank lines skipped): %v", len(blocks), blocks)
+	}
+	for _, b := range blocks {
+		if b["type"] != "paragraph" {
+			t.Errorf("every line must become a paragraph, got %v", b["type"])
+		}
+	}
+	// The markdown syntax survives as literal text rather than being
+	// interpreted — which is the honest behaviour for this flag.
+	first, _ := blocks[0]["paragraph"].(map[string]interface{})
+	rt, _ := first["rich_text"].([]map[string]interface{})
+	txt, _ := rt[0]["text"].(map[string]interface{})
+	if txt["content"] != "# Not A Heading" {
+		t.Errorf("markdown should be preserved literally, got %v", txt["content"])
+	}
+}
+
+// TestPagesCreate_RejectsConflictingBodyFlags — both flags fill the same
+// slot, so taking one silently would discard the other's file.
+func TestPagesCreate_RejectsConflictingBodyFlags(t *testing.T) {
+	withCmdEnv(t)
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.json")
+	b := filepath.Join(dir, "b.txt")
+	_ = os.WriteFile(a, []byte(`[{"object":"block","type":"paragraph","paragraph":{"rich_text":[]}}]`), 0o600)
+	_ = os.WriteFile(b, []byte("text\n"), 0o600)
+
+	resetPagesFlags()
+	resetRootCmdArgs()
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	rootCmd.SetArgs([]string{"pages", "create", "--parent", "p",
+		"--children-json", a, "--from-text", b})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("both body flags set: want an error")
+	}
+	if !strings.Contains(err.Error(), "only one") {
+		t.Errorf("error should say to pass only one, got: %v", err)
+	}
+}
+
+// TestReadPagePropertiesFile_Validation covers the malformed and empty
+// cases the issue asks for, since a silently-ignored file is worse than a
+// rejected one.
+func TestReadPagePropertiesFile_Validation(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return p
+	}
+
+	if got, err := readPagePropertiesFile(""); got != nil || err != nil {
+		t.Errorf("empty path should be a no-op, got %v %v", got, err)
+	}
+	if _, err := readPagePropertiesFile(write("bad.json", "{not json")); err == nil {
+		t.Error("malformed JSON: want an error")
+	}
+	if _, err := readPagePropertiesFile(write("empty.json", "   \n")); err == nil {
+		t.Error("empty file: want an error")
+	}
+	if _, err := readPagePropertiesFile(write("none.json", "{}")); err == nil {
+		t.Error("JSON with no properties: want an error")
+	}
+	if _, err := readPagePropertiesFile(filepath.Join(dir, "missing.json")); err == nil {
+		t.Error("missing file: want an error")
+	}
+	got, err := readPagePropertiesFile(write("ok.json", `{"Done":{"checkbox":true}}`))
+	if err != nil || len(got) != 1 {
+		t.Errorf("valid file: got %v %v", got, err)
 	}
 }

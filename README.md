@@ -123,8 +123,15 @@ with a presigned URL — which expires, so the block is re-read on every run.
   `blocks list` is top-level only. Warns on stderr if Notion truncated the render
   or could not handle particular blocks, so `pages markdown <id> > page.md`
   produces a clean file.
-- `pages create`: Create a page under a page or database parent.
-- `pages update <id>`: Update a page's title or properties.
+- `pages create`: Create a page under a page or database parent. `--title` is a
+  shortcut for the title property; `--properties-json` passes the full Notion
+  property system through verbatim (relation, people, status, multi-select,
+  date, files). `--children-json` seeds the body from a block array, or
+  `--from-text` from a text file, one paragraph per non-empty line — that is not
+  a markdown parser.
+- `pages update <id>`: Update a page's title or properties. `--property key=value`
+  covers string-valued properties; `--properties-json` covers every other type.
+  Given both, the JSON file is the base and `--property` overlays it.
 - `pages archive <id>` / `pages unarchive <id>`: Move a page to or from the trash.
 - `pages move <id> --parent <id>`: Reparent a page.
 - `pages duplicate <id> --parent <id>`: Copy a page and its blocks.
