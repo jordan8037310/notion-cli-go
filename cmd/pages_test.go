@@ -381,6 +381,13 @@ type pagesDispatchServer struct {
 	mu     sync.Mutex
 	calls  map[string]int64
 	bodies map[string][]byte
+
+	// failCreateWith makes POST /pages return 400 when the request body
+	// contains this substring. Added for the create-many tests (#39),
+	// which need a per-entry failure to exercise --on-error. Empty (the
+	// default) leaves every create succeeding, so existing tests are
+	// untouched.
+	failCreateWith string
 }
 
 func newPagesDispatchServer(t *testing.T) *pagesDispatchServer {
@@ -403,6 +410,14 @@ func newPagesDispatchServer(t *testing.T) *pagesDispatchServer {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/pages/"):
 			writeDispatchPage(w, strings.TrimPrefix(r.URL.Path, "/pages/"))
 		case r.Method == http.MethodPost && r.URL.Path == "/pages":
+			d.mu.Lock()
+			fail := d.failCreateWith != "" && bytes.Contains(body, []byte(d.failCreateWith))
+			d.mu.Unlock()
+			if fail {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"object":"error","status":400,"code":"validation_error","message":"body failed validation"}`))
+				return
+			}
 			writeDispatchPage(w, "newPageID")
 		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/pages/"):
 			writeDispatchPage(w, strings.TrimPrefix(r.URL.Path, "/pages/"))
@@ -481,6 +496,11 @@ func resetPagesFlags() {
 	pagesCreateChildren = ""
 	pagesCreateFromText = ""
 	pagesUpdateProps2 = ""
+	// Added with #39.
+	pagesCreateManyFrom = ""
+	pagesCreateManyOnErr = "abort"
+	pagesCreateManyParent = ""
+	pagesCreateManyParentDB = ""
 }
 
 // TestPagesGetDispatch runs `pages get <id>` end-to-end against the mock.

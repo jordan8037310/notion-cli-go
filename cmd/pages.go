@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,17 +24,21 @@ import (
 // Flag vars for the pages subcommands. Keeping them package-level mirrors
 // blocks.go's pattern and lets cobra bind them via init().
 var (
-	pagesCreateParent    string
-	pagesCreateParentDB  string
-	pagesCreateTitle     string
-	pagesCreateProps     string
-	pagesCreateChildren  string
-	pagesCreateFromText  string
-	pagesUpdateProps2    string
-	pagesUpdateTitle     string
-	pagesUpdateProps     []string
-	pagesMoveParent      string
-	pagesDuplicateParent string
+	pagesCreateParent       string
+	pagesCreateParentDB     string
+	pagesCreateTitle        string
+	pagesCreateProps        string
+	pagesCreateChildren     string
+	pagesCreateFromText     string
+	pagesCreateManyFrom     string
+	pagesCreateManyParent   string
+	pagesCreateManyParentDB string
+	pagesCreateManyOnErr    string
+	pagesUpdateProps2       string
+	pagesUpdateTitle        string
+	pagesUpdateProps        []string
+	pagesMoveParent         string
+	pagesDuplicateParent    string
 )
 
 // pagesCmd is the parent of every `notioncli pages …` subcommand.
@@ -526,6 +531,180 @@ Limitations:
 // table split will land with the wider --json rollout on the roadmap. The
 // writer is threaded through cmd.OutOrStdout() so tests can capture output
 // via cmd.SetOut.
+// pageSpec is one entry of a create-many input file.
+//
+// The parent keys deliberately mirror the flag names on `pages create`
+// rather than Notion's wire shape. A single "parent": "<id>" cannot say
+// whether the id is a page or a database, and guessing wrong writes the
+// row into the wrong surface; naming the two keys separately removes the
+// ambiguity using vocabulary the caller already knows from the flags.
+type pageSpec struct {
+	Parent     string                   `json:"parent"`
+	ParentDB   string                   `json:"parent_database"`
+	Title      string                   `json:"title"`
+	Properties map[string]interface{}   `json:"properties"`
+	Children   []map[string]interface{} `json:"children"`
+}
+
+var pagesCreateManyCmd = &cobra.Command{
+	Use:   "create-many",
+	Short: "Create many pages from a JSON array or JSONL file",
+	Long: `Create one page per entry in --from, in file order.
+
+The file is either a JSON array or a JSONL stream (one object per line);
+the form is detected from the first non-space byte, so both work without
+a flag. Each entry:
+
+  {"parent": "<page-id>", "parent_database": "<db-id>",
+   "title": "...", "properties": {...}, "children": [...]}
+
+"parent" is a PAGE id and "parent_database" is a DATABASE id — the same
+split as the flags of the same name, because one "parent" id cannot say
+which surface it names. --parent / --parent-database supply the default
+for entries that give neither.
+
+properties and children are passed to Notion verbatim, exactly as with
+'pages create --properties-json'.
+
+Notion has no bulk-create endpoint, so pages are POSTed one at a time and
+each is reported as it lands. --on-error abort (the default) stops at the
+first failure; --on-error continue attempts every entry and reports the
+failures at the end. Under either, the pages that were created are still
+written to stdout: a partial import has to be reportable, or the operator
+cannot tell what not to re-run.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var abort bool
+		switch pagesCreateManyOnErr {
+		case "abort", "":
+			abort = true
+		case "continue":
+			abort = false
+		default:
+			return jsonErrorOr(cmd, fmt.Errorf(
+				"create pages: invalid --on-error %q (want abort|continue)", pagesCreateManyOnErr))
+		}
+		if pagesCreateManyFrom == "" {
+			return jsonErrorOr(cmd, fmt.Errorf("create pages: --from is required"))
+		}
+		specs, err := readPageSpecsFile(pagesCreateManyFrom, pagesCreateManyParent, pagesCreateManyParentDB)
+		if err != nil {
+			return jsonErrorOr(cmd, fmt.Errorf("create pages: %w", err))
+		}
+		pc, err := newPageClient()
+		if err != nil {
+			return jsonErrorOr(cmd, err)
+		}
+
+		// Stream each outcome as it happens. At Notion's few-per-second
+		// ceiling a large import runs for minutes, and a command that
+		// prints nothing until the end is indistinguishable from a hang.
+		out, errW := cmd.OutOrStdout(), cmd.ErrOrStderr()
+		total := len(specs)
+		onEach := func(i int, page *utils.Page, err error) {
+			switch {
+			case err != nil && globalJSON:
+				// stderr stays line-delimited JSON in --json mode (#64),
+				// so a per-entry failure is an envelope, not a red line.
+				// N failures produce N envelopes plus the closing summary
+				// one — every line still parses, and a partial import is
+				// exactly N+1 distinct facts.
+				emitError(errW, err)
+			case err != nil:
+				fmt.Fprintln(errW, color.RedString("[%d/%d] %v", i+1, total, err))
+			case globalJSON:
+				_ = emitJSON(out, page)
+			default:
+				fmt.Fprintf(out, "[%d/%d] created %s\n", i+1, total, page.ID)
+			}
+		}
+
+		created, errs := pc.CreateMany(cmd.Context(), specs, abort, onEach)
+		if !globalJSON {
+			color.New(color.FgGreen).Fprintf(out, "Created %d of %d page(s)\n", len(created), total)
+		}
+		if len(errs) > 0 {
+			// Non-zero exit even under --on-error continue: the successes
+			// are already on stdout, and a script must be able to tell a
+			// partial import from a clean one without diffing counts.
+			return jsonErrorOr(cmd, fmt.Errorf(
+				"create pages: %d of %d entries failed (first: %v)", len(errs), total, errs[0]))
+		}
+		return nil
+	},
+}
+
+// readPageSpecsFile parses a create-many input file into create requests.
+//
+// Both a JSON array and a JSONL stream are accepted, decided by the first
+// non-space byte. json.Decoder handles the stream case natively, so the
+// two forms share one loop rather than one parser each.
+func readPageSpecsFile(path, defaultParent, defaultParentDB string) ([]utils.CreatePageRequest, error) {
+	buf, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	trimmed := bytes.TrimSpace(buf)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("%s is empty", path)
+	}
+
+	var raw []pageSpec
+	if trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &raw); err != nil {
+			return nil, fmt.Errorf("parse %s as a JSON array of page specs: %w", path, err)
+		}
+	} else {
+		dec := json.NewDecoder(bytes.NewReader(trimmed))
+		for n := 1; ; n++ {
+			var spec pageSpec
+			if err := dec.Decode(&spec); err != nil {
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				return nil, fmt.Errorf("parse %s as JSONL, entry %d: %w", path, n, err)
+			}
+			raw = append(raw, spec)
+		}
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("%s contains no page specs", path)
+	}
+
+	specs := make([]utils.CreatePageRequest, 0, len(raw))
+	for i, r := range raw {
+		parent, parentDB := r.Parent, r.ParentDB
+		// The flags are a default, not an override: an entry that names
+		// its own parent keeps it, so one file can span several parents
+		// while --parent-database still covers the common single-target
+		// import.
+		if parent == "" && parentDB == "" {
+			parent, parentDB = defaultParent, defaultParentDB
+		}
+		pp, err := buildCreateParent(parent, parentDB)
+		if err != nil {
+			// buildCreateParent phrases its errors for the flags; entry
+			// N of a file needs to say which entry and which keys.
+			return nil, fmt.Errorf("entry %d (%s): set \"parent\" or \"parent_database\" on the entry, or pass --parent/--parent-database as a default (%v)",
+				i+1, specLabel(r), err)
+		}
+		specs = append(specs, utils.CreatePageRequest{
+			Parent:     pp,
+			Title:      r.Title,
+			Properties: r.Properties,
+			Children:   r.Children,
+		})
+	}
+	return specs, nil
+}
+
+// specLabel names an entry in a parse error, preferring its title.
+func specLabel(r pageSpec) string {
+	if r.Title != "" {
+		return r.Title
+	}
+	return "untitled"
+}
+
 func printPage(w io.Writer, page *utils.Page) {
 	if page == nil {
 		return
@@ -632,6 +811,7 @@ func init() {
 	pagesCmd.AddCommand(pagesPropertyCmd)
 	pagesCmd.AddCommand(pagesMarkdownCmd)
 	pagesCmd.AddCommand(pagesCreateCmd)
+	pagesCmd.AddCommand(pagesCreateManyCmd)
 	pagesCmd.AddCommand(pagesUpdateCmd)
 	pagesCmd.AddCommand(pagesArchiveCmd)
 	pagesCmd.AddCommand(pagesUnarchiveCmd)
@@ -644,6 +824,11 @@ func init() {
 	pagesCreateCmd.Flags().StringVar(&pagesCreateChildren, "children-json", "", "Path to a JSON array of blocks for the page body")
 	pagesCreateCmd.Flags().StringVar(&pagesCreateFromText, "from-text", "", "Path to a text file; each non-empty line becomes a paragraph block (not a markdown parser — see #45)")
 	pagesCreateCmd.Flags().StringVar(&pagesCreateTitle, "title", "", "Title for the new page")
+
+	pagesCreateManyCmd.Flags().StringVar(&pagesCreateManyFrom, "from", "", "Path to a JSON array or JSONL file of page specs (required)")
+	pagesCreateManyCmd.Flags().StringVar(&pagesCreateManyOnErr, "on-error", "abort", "What to do when an entry fails: abort|continue")
+	pagesCreateManyCmd.Flags().StringVar(&pagesCreateManyParent, "parent", "", "Default parent page ID for entries that name no parent")
+	pagesCreateManyCmd.Flags().StringVar(&pagesCreateManyParentDB, "parent-database", "", "Default parent database ID for entries that name no parent")
 
 	pagesUpdateCmd.Flags().StringVar(&pagesUpdateTitle, "title", "", "New title for the page")
 	pagesUpdateCmd.Flags().StringVar(&pagesUpdateProps2, "properties-json", "", "Path to a JSON object of Notion property values, passed through verbatim; covers types --property cannot")

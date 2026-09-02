@@ -254,25 +254,50 @@ func (p *PageClient) Create(ctx context.Context, req CreatePageRequest) (*Page, 
 	if err := p.checkAuth(); err != nil {
 		return nil, fmt.Errorf("create page: %w", err)
 	}
-	if req.Parent.DatabaseID == "" && req.Parent.DataSourceID == "" && req.Parent.PageID == "" && !req.Parent.Workspace {
-		return nil, fmt.Errorf("create page: parent is required")
+	if err := validateCreateParent(req.Parent); err != nil {
+		return nil, err
 	}
+	parent, titleKey := p.resolveCreateTarget(ctx, req.Parent)
+	return p.createResolved(ctx, parent, titleKey, req)
+}
 
-	parent := req.Parent
+// validateCreateParent rejects a spec that names no parent at all. Notion
+// requires one and its own error for the omission is not specific.
+func validateCreateParent(parent PageParent) error {
+	if parent.DatabaseID == "" && parent.DataSourceID == "" && parent.PageID == "" && !parent.Workspace {
+		return fmt.Errorf("create page: parent is required")
+	}
+	return nil
+}
+
+// resolveCreateTarget runs the database probe documented on Create and
+// returns the parent to post against together with the key --title should
+// be written to.
+//
+// It is split out of Create so CreateMany can run it ONCE per distinct
+// database and reuse the answer for every row beneath it. The probe is a
+// network round-trip, and a bulk import is almost always many pages under
+// a single parent — left inline, an N-row import would issue 2N requests
+// against an API that rate-limits at a few per second.
+//
+// Every failure path returns the caller's own parent and the literal key
+// "title" (the pre-#60 behaviour), so a probe that cannot answer degrades
+// to an opaque Notion 400 rather than a write to the wrong column.
+func (p *PageClient) resolveCreateTarget(ctx context.Context, want PageParent) (PageParent, string) {
+	parent := want
 	titleKey := "title"
-	wantTitle := req.Title != "" && !propertiesContainTitle(req.Properties)
 
-	// Probe only when the caller passed DatabaseID and we need either
-	// the title key or surface-type discrimination. Skip when caller
-	// pre-resolved by setting DataSourceID, page parents, or no title.
-	if req.Parent.DatabaseID != "" && req.Parent.DataSourceID == "" && (wantTitle || true) {
+	// Only database parents need resolving. A caller that pre-set
+	// DataSourceID already knows the surface type, and page/workspace
+	// parents have no schema to probe.
+	if want.DatabaseID != "" && want.DataSourceID == "" {
 		// We always probe on database parents — even without --title,
 		// 2026-03-11 may need the discriminator swap for the request
 		// to land. Cost is one extra GET per database-parented create.
 		dc := NewDatabaseClient(p.c)
-		if probed, err := dc.Get(ctx, req.Parent.DatabaseID); err == nil && probed != nil {
+		if probed, err := dc.Get(ctx, want.DatabaseID); err == nil && probed != nil {
 			if probed.Object == "data_source" {
-				parent = PageParent{DataSourceID: req.Parent.DatabaseID}
+				parent = PageParent{DataSourceID: want.DatabaseID}
 			}
 			schema := probed.Properties
 
@@ -305,6 +330,13 @@ func (p *PageClient) Create(ctx context.Context, req CreatePageRequest) (*Page, 
 		// parent and titleKey at their defaults — worst case is the
 		// pre-#60 behaviour, an opaque 400 from Notion.
 	}
+	return parent, titleKey
+}
+
+// createResolved posts a single page against an already-resolved parent
+// and title key, skipping the probe Create would otherwise run.
+func (p *PageClient) createResolved(ctx context.Context, parent PageParent, titleKey string, req CreatePageRequest) (*Page, error) {
+	wantTitle := req.Title != "" && !propertiesContainTitle(req.Properties)
 
 	body := map[string]interface{}{"parent": parent}
 	props := map[string]interface{}{}
@@ -333,6 +365,120 @@ func (p *PageClient) Create(ctx context.Context, req CreatePageRequest) (*Page, 
 		return nil, fmt.Errorf("create page: %w", err)
 	}
 	return &page, nil
+}
+
+// CreateMany creates each spec in order and returns the pages that were
+// created together with the failures.
+//
+// Notion has no multi-page POST, so this is a sequential loop over
+// createResolved rather than anything batched on the wire. Two things make
+// it more than a for-loop around Create:
+//
+//   - The database probe is memoised per distinct database id. A bulk
+//     import is overwhelmingly "N rows under one parent", so probing per
+//     row would double the request count for no new information.
+//   - Errors are wrapped with the entry's index and title before they are
+//     returned. A bare error out of a 500-row import tells the operator
+//     nothing about which line to fix.
+//
+// abortOnError stops at the first failure; otherwise every spec is
+// attempted and the failures accumulate. Either way `created` holds the
+// pages that did land — a partial import must still be reportable, since
+// the operator has to know what NOT to re-run.
+//
+// onEach, when non-nil, is called after every attempt with that entry's
+// index and outcome. It exists so the caller can stream results as they
+// happen: at Notion's few-requests-per-second ceiling a large import is
+// minutes long, and a command that prints nothing until the end looks
+// hung. Rate limiting itself needs no handling here — the client retries
+// 429 with Retry-After (see utils/retry.go).
+//
+// ctx cancellation is checked between entries, so an interrupted import
+// stops promptly instead of running to the end of the file.
+func (p *PageClient) CreateMany(ctx context.Context, specs []CreatePageRequest, abortOnError bool, onEach func(i int, page *Page, err error)) ([]*Page, []error) {
+	var created []*Page
+	var errs []error
+
+	report := func(i int, page *Page, err error) {
+		if onEach != nil {
+			onEach(i, page, err)
+		}
+	}
+	fail := func(i int, spec CreatePageRequest, err error) {
+		err = fmt.Errorf("entry %d (%s): %w", i+1, describeSpec(spec), err)
+		errs = append(errs, err)
+		report(i, nil, err)
+	}
+
+	if err := p.checkAuth(); err != nil {
+		if len(specs) > 0 {
+			fail(0, specs[0], err)
+		} else {
+			errs = append(errs, fmt.Errorf("create pages: %w", err))
+		}
+		return created, errs
+	}
+
+	// Memoised probe results, keyed by the database id the caller named.
+	type target struct {
+		parent   PageParent
+		titleKey string
+	}
+	targets := map[string]target{}
+
+	for i, spec := range specs {
+		if err := ctx.Err(); err != nil {
+			fail(i, spec, err)
+			return created, errs
+		}
+		if err := validateCreateParent(spec.Parent); err != nil {
+			fail(i, spec, err)
+			if abortOnError {
+				return created, errs
+			}
+			continue
+		}
+
+		parent, titleKey := spec.Parent, "title"
+		if key := spec.Parent.DatabaseID; key != "" && spec.Parent.DataSourceID == "" {
+			t, ok := targets[key]
+			if !ok {
+				t.parent, t.titleKey = p.resolveCreateTarget(ctx, spec.Parent)
+				targets[key] = t
+			}
+			parent, titleKey = t.parent, t.titleKey
+		}
+
+		page, err := p.createResolved(ctx, parent, titleKey, spec)
+		if err != nil {
+			fail(i, spec, err)
+			if abortOnError {
+				return created, errs
+			}
+			continue
+		}
+		created = append(created, page)
+		report(i, page, nil)
+	}
+	return created, errs
+}
+
+// describeSpec names an entry in an error message. The title is what the
+// operator recognises in their source file; entries without one fall back
+// to the parent so the message still points somewhere.
+func describeSpec(spec CreatePageRequest) string {
+	if spec.Title != "" {
+		return spec.Title
+	}
+	switch {
+	case spec.Parent.DatabaseID != "":
+		return "in database " + spec.Parent.DatabaseID
+	case spec.Parent.DataSourceID != "":
+		return "in data source " + spec.Parent.DataSourceID
+	case spec.Parent.PageID != "":
+		return "under page " + spec.Parent.PageID
+	}
+	return "untitled"
 }
 
 // resolveTitleKeyForExistingPage returns the key of the title-typed

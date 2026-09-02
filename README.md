@@ -129,6 +129,21 @@ with a presigned URL — which expires, so the block is re-read on every run.
   date, files). `--children-json` seeds the body from a block array, or
   `--from-text` from a text file, one paragraph per non-empty line — that is not
   a markdown parser.
+- `pages create-many --from FILE`: Create many pages from a JSON array or a
+  JSONL stream, one entry per page. Each entry takes `parent` (a page id),
+  `parent_database` (a database id), `title`, `properties` and `children` — the
+  same payloads `pages create` accepts, and `--parent` / `--parent-database`
+  supply the default for entries that name neither. Notion has no bulk-create
+  endpoint, so pages are POSTed one at a time and reported as they land;
+  `--on-error abort` (default) stops at the first failure and `--on-error
+  continue` attempts every entry. Either way the pages that were created are
+  written to stdout and the exit code is non-zero, so a partial import is never
+  mistaken for a clean one.
+
+  ```bash
+  notioncli pages create-many --from rows.jsonl --parent-database <db-id>
+  ```
+
 - `pages update <id>`: Update a page's title or properties. `--property key=value`
   covers string-valued properties; `--properties-json` covers every other type.
   Given both, the JSON file is the base and `--property` overlays it.
