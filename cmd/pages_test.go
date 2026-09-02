@@ -407,6 +407,14 @@ func newPagesDispatchServer(t *testing.T) *pagesDispatchServer {
 		}
 		d.mu.Unlock()
 		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/markdown"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/pages/"), "/markdown")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"object": "page_markdown", "id": id,
+				"markdown":  "# Rendered\n\nby notion\n",
+				"truncated": false, "unknown_block_ids": []string{},
+			})
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/pages/"):
 			writeDispatchPage(w, strings.TrimPrefix(r.URL.Path, "/pages/"))
 		case r.Method == http.MethodPost && r.URL.Path == "/pages":
@@ -518,6 +526,10 @@ func resetPagesFlags() {
 	pagesExportDepth = -1
 	pagesExportFormat = "json"
 	pagesExportOut = ""
+	// Added with #131.
+	pagesEditMDReplace = nil
+	pagesEditMDFile = ""
+	pagesEditMDAll = false
 }
 
 // TestPagesGetDispatch runs `pages get <id>` end-to-end against the mock.
